@@ -14,6 +14,7 @@
 #include "VPhysics_Interface.h"
 #include "Studio.h"
 #include "byteswap.h"
+#include "utlhashdict.h"
 #include "UtlBuffer.h"
 #include "CollisionUtils.h"
 #include <float.h>
@@ -22,6 +23,9 @@
 #include "utlsymbol.h"
 #include "tier1/strtools.h"
 #include "KeyValues.h"
+#include "scriplib.h"
+
+#define STATIC_PROP_COMBINE_ENABLED
 
 static void SetCurrentModel( studiohdr_t *pStudioHdr );
 static void FreeCurrentModelVertexes();
@@ -67,6 +71,204 @@ struct ModelCollisionLookup_t
 	CUtlSymbol m_Name;
 	CPhysCollide* m_pCollide;
 };
+
+class QCFile_t
+{
+public:
+	char const* m_pPath;
+	char const* m_pRefSMD;
+	char const* m_pPhySMD;
+	float m_flRefScale;
+	float m_flPhyScale;
+
+	QCFile_t();
+	QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetVal = NULL);
+	~QCFile_t();
+};
+
+QCFile_t::QCFile_t()
+{
+	m_pPath = m_pRefSMD = m_pPhySMD = NULL;
+	m_flRefScale = m_flPhyScale = 1.0f;
+}
+
+QCFile_t::QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetVal)
+{
+	m_pPath = m_pRefSMD = m_pPhySMD = NULL;
+	m_flRefScale = m_flPhyScale = 1.0f;
+
+	if (pRetVal)
+		*pRetVal = false;
+
+	FileHandle_t f = g_pFullFileSystem->Open(pFilePath, "rb");
+	if (!f)
+	{
+		Warning("Invalid QC filepath supplied: %s - ignoring...\n", pFilePath);
+		
+		return;
+	}
+
+	// load file into a null-terminated buffer
+	int fileSize = g_pFullFileSystem->Size(f);
+	unsigned bufSize = g_pFullFileSystem->GetOptimalReadSize(f, fileSize + 2);
+
+	char *buffer = (char*)g_pFullFileSystem->AllocOptimalReadBuffer(f, bufSize);
+	Assert(buffer);
+
+	// read into local buffer
+	bool bRetOK = (g_pFullFileSystem->ReadEx(buffer, bufSize, fileSize, f) != 0);
+
+	g_pFullFileSystem->Close(f);	// close file after reading	
+
+	if (!bRetOK)
+	{
+		Warning("Error reading: %s - ignoring...\n", pFilePath);
+		return;
+	}
+
+	float scaleFactor = 1.f;
+	char modelName[MAXTOKEN];
+	modelName[0] = '\0';
+
+	ParseFromMemory(buffer, bufSize); // This should be replaced with a dedicated parser, as this causes includes to error out the program
+	while (GetToken(true))
+	{
+		if (!V_strcmp(token, "{")) // Skip over irrelevant "compound" sections
+		{
+			while (GetToken(true))
+			{
+				if (!V_strcmp(token, "}"))
+					break;
+			}
+		}
+
+		if (!V_stricmp(token, "$scale"))
+		{
+			if (!GetToken(true))
+				goto invalidQC;
+			
+			sscanf_s(token, "%f", &scaleFactor);
+			continue;
+		}
+
+		if (!V_stricmp(token, "$modelname"))
+		{
+			if (!GetToken(true))
+				goto invalidQC;
+
+			sscanf_s(token, "%s", &modelName);
+			continue;
+		}
+
+		if (!V_stricmp(token, "$bodygroup") || !V_stricmp(token, "$body") || !V_stricmp(token, "$model"))
+		{
+			if (!GetToken(true))
+				goto invalidQC;
+
+			if (V_strcmp(token, "{")) // String
+			{
+				if (m_pRefSMD || !GetToken(true))
+					goto invalidQC;
+
+				char *pRefSMD = new char[MAX_PATH];
+				V_snprintf(pRefSMD, MAX_PATH, "%s/%s", pFileLocation, token);
+
+				m_pRefSMD = pRefSMD;
+				m_flRefScale = scaleFactor;
+				continue;
+			}
+
+			// Brace open
+			while (GetToken(true) && !V_strcmp(token, "}"))
+			{
+				if (!V_stricmp(token, "studio"))
+				{
+					if (m_pRefSMD)
+						goto invalidQC;
+
+					if (!GetToken(true))
+						goto invalidQC;
+
+					char *pRefSMD = new char[MAX_PATH];
+					V_snprintf(pRefSMD, MAX_PATH, "%s/%s", pFileLocation, token);
+
+					m_pRefSMD = pRefSMD;
+					m_flRefScale = scaleFactor;
+				}
+			}
+
+			
+			continue;
+		}
+
+		if (!V_stricmp(token, "$collisionmodel"))
+		{
+			if (!GetToken(true))
+				goto invalidQC;
+
+			char *pPhySMD = new char[MAX_PATH];
+			V_snprintf(pPhySMD, MAX_PATH, "%s/%s", pFileLocation, token);
+
+			m_pPhySMD = pPhySMD;
+			m_flPhyScale = scaleFactor;
+			continue;
+		}
+
+		if (
+			!V_stricmp(token, "$collisionjoints") ||
+			!V_stricmp(token, "$ikchain") ||
+			!V_stricmp(token, "$weightlist") ||
+			!V_stricmp(token, "$poseparameter") ||
+			!V_stricmp(token, "$proceduralbones") ||
+			!V_stricmp(token, "$jigglebone")
+			)
+		{
+			goto invalidQC;
+		}
+	}
+
+	if (!modelName[0] || !m_pRefSMD)
+		goto invalidQC;
+
+	char *pPath = new char[MAX_PATH];
+	V_strncpy(pPath, modelName, MAX_PATH);
+	m_pPath = pPath;
+
+	g_pFullFileSystem->FreeOptimalReadBuffer(buffer);
+
+	if (pRetVal)
+		*pRetVal = true;
+
+	return;
+
+invalidQC:
+	Warning("Invalid static prop QC: %s\n", pFilePath);
+
+	// Reset the QC and get out
+	if (m_pPath)
+		delete m_pPath;
+	if (m_pRefSMD)
+		delete m_pRefSMD;
+	if (m_pPhySMD)
+		delete m_pPhySMD;
+
+	m_pPath = m_pRefSMD = m_pPhySMD = NULL;
+	m_flRefScale = m_flPhyScale = 1.0f;
+
+	g_pFullFileSystem->FreeOptimalReadBuffer(buffer);
+
+	return;
+}
+
+QCFile_t::~QCFile_t()
+{
+	if (m_pPath)
+		delete m_pPath;
+	if (m_pRefSMD)
+		delete m_pRefSMD;
+	if (m_pPhySMD)
+		delete m_pPhySMD;
+}
 
 static bool ModelLess( ModelCollisionLookup_t const& src1, ModelCollisionLookup_t const& src2 )
 {
@@ -563,6 +765,48 @@ static void SetLumpData( )
 }
 
 
+void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "modelsrc")
+{
+	FileFindHandle_t handle;
+	
+	char szQCPattern[MAX_PATH] = { 0 };
+	Q_snprintf(szQCPattern, MAX_PATH, "%s/*.*", szSearchDir);
+
+	for (const char *szFindResult = g_pFullFileSystem->FindFirst(szQCPattern, &handle);
+		szFindResult;
+		szFindResult = g_pFullFileSystem->FindNext(handle))
+	{
+		if (szFindResult[0] != '.')
+		{
+			char szFullPath[MAX_PATH] = { 0 };
+			V_snprintf(szFullPath, sizeof(szFullPath), "%s/%s", szSearchDir, szFindResult);
+			V_FixDoubleSlashes(szFullPath);
+
+			if (g_pFullFileSystem->FindIsDirectory(handle))
+			{
+				SearchQCs(vecQCs, szFullPath);
+			}
+			else
+			{
+				char szExtension[MAX_PATH] = { 0 };
+				V_ExtractFileExtension(szFindResult, szExtension, MAX_PATH);
+
+				if (!V_stricmp(szExtension, "qc"))
+				{
+					bool retVal = false;
+					QCFile_t *newQC = new QCFile_t(szSearchDir, szFullPath, &retVal);
+
+					if (retVal)
+						vecQCs.AddToTail(newQC);
+					else
+						delete newQC;
+				}
+			}
+		}
+	}
+}
+
+
 //-----------------------------------------------------------------------------
 // Places Static Props in the level
 //-----------------------------------------------------------------------------
@@ -588,10 +832,22 @@ void EmitStaticProps()
 		}
 	}
 
+#ifdef STATIC_PROP_COMBINE_ENABLED
+	CUtlVector<int> vecPropCombineVolumes;
+	CUtlVector<StaticPropBuild_t> vecBuilds;
+
+#endif
+
 	// Emit specifically specified static props
 	for ( i = 0; i < num_entities; ++i)
 	{
 		char* pEntity = ValueForKey(&entities[i], "classname");
+#ifdef STATIC_PROP_COMBINE_ENABLED
+		if (!strcmp(pEntity, "comp_propcombine_volume"))
+		{
+			vecPropCombineVolumes.AddToTail(i);
+		} else
+#endif
 		if (!strcmp(pEntity, "static_prop") || !strcmp(pEntity, "prop_static"))
 		{
 			StaticPropBuild_t build;
@@ -662,12 +918,61 @@ void EmitStaticProps()
 			}
 			build.m_nMinDXLevel = (unsigned short)IntForKey( &entities[i], "mindxlevel" );
 			build.m_nMaxDXLevel = (unsigned short)IntForKey( &entities[i], "maxdxlevel" );
+
+#ifdef STATIC_PROP_COMBINE_ENABLED
+			vecBuilds.AddToTail(build);
+#else
 			AddStaticPropToLump( build );
+#endif
 
 			// strip this ent from the .bsp file
 			entities[i].epairs = 0;
 		}
 	}
+
+#ifdef STATIC_PROP_COMBINE_ENABLED
+
+	if (vecPropCombineVolumes.Count() > 0)
+	{
+		Msg("\nCombining static props to reduce drawcalls...\n\n");
+
+		//int nOriginalCount = vecBuilds.Count();
+		//int nCombineIndex = 0;
+
+		
+
+		// Combining algorithm:
+
+		// Load all QCs
+		CUtlVector<QCFile_t *> vecQCs;
+		SearchQCs(vecQCs);
+
+		CUtlHashDict<CUtlSymbol> dPropSkins;
+
+		// Find prop materials by decompiling or finding qc
+		 
+
+
+		CUtlHashDict<CUtlVector<StaticPropBuild_t>> dPropGroups;
+
+		// Group the props by material
+		for (i = 0; i < vecBuilds.Count(); ++i)
+		{
+			//int groupIndex = dPropGroups.Insert();
+		}
+
+
+		//, then split these groups by the propcombine volume
+		// Then combine these props, create new builds and add to lump
+
+		for (i = vecPropCombineVolumes.Count(); --i >= 0; )
+		{
+			// Strip the ent, hard to tell if this removes the faces but I think it does
+			entities[vecPropCombineVolumes[i]].epairs = 0;
+			entities[vecPropCombineVolumes[i]].numbrushes = 0;
+		}
+	}
+#endif
 
 	// Strip out lighting origins; has to be done here because they are used when
 	// static props are made
