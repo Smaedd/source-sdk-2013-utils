@@ -806,6 +806,7 @@ void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "models
 	}
 }
 
+#define MAX_GROUPING_KEY 256
 
 //-----------------------------------------------------------------------------
 // Places Static Props in the level
@@ -921,6 +922,8 @@ void EmitStaticProps()
 
 #ifdef STATIC_PROP_COMBINE_ENABLED
 			vecBuilds.AddToTail(build);
+
+
 #else
 			AddStaticPropToLump( build );
 #endif
@@ -947,18 +950,88 @@ void EmitStaticProps()
 		CUtlVector<QCFile_t *> vecQCs;
 		SearchQCs(vecQCs);
 
-		CUtlHashDict<CUtlSymbol> dPropSkins;
-
 		// Find prop materials by decompiling or finding qc
-		 
 
 
-		CUtlHashDict<CUtlVector<StaticPropBuild_t>> dPropGroups;
+		// RIGHT NOW: ASSUME WE HAVE THE MODEL SRC - QC FOUND
 
-		// Group the props by material
-		for (i = 0; i < vecBuilds.Count(); ++i)
+		// Pair key to group, by index in vecBuilds
+		CUtlHashDict<CUtlVector<int> *> dPropGroups;
+		
+		// Create grouping key for each
+		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
+		for (i = 0; i < vecBuilds.Size(); ++i) 
 		{
-			//int groupIndex = dPropGroups.Insert();
+			// Load the studio model file
+			CUtlBuffer buf;
+			if (!LoadStudioModel(vecBuilds[i].m_pModelName, "prop_static", buf))
+			{
+				Warning("Error loading studio model \"%s\"!\n", vecBuilds[i].m_pModelName);
+
+				continue;
+			}
+
+			// Compute the convex hull of the model...
+			studiohdr_t* pStudioHdr = (studiohdr_t*)buf.PeekGet();
+
+			char groupingKey[MAX_GROUPING_KEY];
+			int curGroupingKeyInd = 0;
+
+			for (int cdMatInd = 0; cdMatInd < pStudioHdr->numcdtextures; ++cdMatInd) 
+			{
+				const char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
+
+				// TODO: Sort this stuff
+				// Add textures to key
+				for (int texInd = 0; texInd < pStudioHdr->numtextures; ++texInd) 
+				{
+					V_strcpy(&groupingKey[curGroupingKeyInd], cdMat);
+					curGroupingKeyInd += V_strlen(cdMat);
+
+					mstudiotexture_t *tex = pStudioHdr->pTexture(cdMatInd);
+					const char *texName = tex->pszName();
+					
+					V_strcpy(&groupingKey[curGroupingKeyInd], texName);
+					curGroupingKeyInd += V_strlen(texName);
+				}
+			}
+
+			V_FixSlashes(groupingKey, '/');
+
+			// Add model flags
+			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->flags);
+			curGroupingKeyInd += 8;
+
+			// Add prop flags
+			const int relevantPropFlags = ~(STATIC_PROP_USE_LIGHTING_ORIGIN | STATIC_PROP_FLAG_FADES);
+
+			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", vecBuilds[i].m_Flags & relevantPropFlags);
+			curGroupingKeyInd += 8;
+
+			// Add contents
+			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->contents);
+			curGroupingKeyInd += 8;
+
+			// Add surfaceprop
+			V_strcpy(&groupingKey[curGroupingKeyInd], pStudioHdr->pszSurfaceProp());
+			curGroupingKeyInd += V_strlen(pStudioHdr->pszSurfaceProp());
+
+			// TODO: Add renderFX
+
+			// TODO: Add tint
+
+			int groupInd = dPropGroups.Find(groupingKey);
+
+			// Add to groups
+			if (!dPropGroups.IsValidIndex(groupInd))
+			{
+				// FIXME: DELETE THESE
+				CUtlVector<int> *newGroup = new CUtlVector<int>();
+
+				groupInd = dPropGroups.Insert(groupingKey, newGroup);
+			}
+
+			dPropGroups[groupInd]->AddToTail(i);
 		}
 
 
