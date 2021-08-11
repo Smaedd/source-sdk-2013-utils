@@ -808,6 +808,71 @@ void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "models
 
 #define MAX_GROUPING_KEY 256
 
+const char *GetGroupingKey(StaticPropBuild_t build)
+{
+	// Load the studio model file
+	CUtlBuffer buf;
+	if (!LoadStudioModel(build.m_pModelName, "prop_static", buf))
+	{
+		Warning("Error loading studio model \"%s\"!\n", build.m_pModelName);
+
+		return NULL;
+	}
+
+	// Compute the convex hull of the model...
+	studiohdr_t* pStudioHdr = (studiohdr_t*)buf.PeekGet();
+
+	// Memory leak. In the spirit of valve, TOO BAD!
+	char *groupingKey = new char[MAX_GROUPING_KEY];
+	int curGroupingKeyInd = 0;
+
+	for (int cdMatInd = 0; cdMatInd < pStudioHdr->numcdtextures; ++cdMatInd)
+	{
+		const char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
+
+		// TODO: Sort this stuff
+		// Add textures to key
+		for (int texInd = 0; texInd < pStudioHdr->numtextures; ++texInd)
+		{
+			V_strcpy(&groupingKey[curGroupingKeyInd], cdMat);
+			curGroupingKeyInd += V_strlen(cdMat);
+
+			mstudiotexture_t *tex = pStudioHdr->pTexture(cdMatInd);
+			const char *texName = tex->pszName();
+
+			V_strcpy(&groupingKey[curGroupingKeyInd], texName);
+			curGroupingKeyInd += V_strlen(texName);
+		}
+	}
+
+	V_FixSlashes(groupingKey, '/');
+
+	// Add model flags
+	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->flags);
+	curGroupingKeyInd += 8;
+
+	// Add prop flags
+	const int relevantPropFlags = ~(STATIC_PROP_USE_LIGHTING_ORIGIN | STATIC_PROP_FLAG_FADES);
+
+	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", build.m_Flags & relevantPropFlags);
+	curGroupingKeyInd += 8;
+
+	// Add contents
+	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->contents);
+	curGroupingKeyInd += 8;
+
+	// Add surfaceprop
+	V_strcpy(&groupingKey[curGroupingKeyInd], pStudioHdr->pszSurfaceProp());
+	curGroupingKeyInd += V_strlen(pStudioHdr->pszSurfaceProp());
+
+	// TODO: Add renderFX
+
+	// TODO: Add tint
+
+	return groupingKey;
+}
+
+
 //-----------------------------------------------------------------------------
 // Places Static Props in the level
 //-----------------------------------------------------------------------------
@@ -836,6 +901,7 @@ void EmitStaticProps()
 #ifdef STATIC_PROP_COMBINE_ENABLED
 	CUtlVector<int> vecPropCombineVolumes;
 	CUtlVector<StaticPropBuild_t> vecBuilds;
+	CUtlVector<bool> vecBuildAccountedFor;
 
 #endif
 
@@ -923,6 +989,8 @@ void EmitStaticProps()
 #ifdef STATIC_PROP_COMBINE_ENABLED
 			vecBuilds.AddToTail(build);
 
+			vecBuildAccountedFor.AddToTail(false);
+
 
 #else
 			AddStaticPropToLump( build );
@@ -962,63 +1030,16 @@ void EmitStaticProps()
 		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
 		for (i = 0; i < vecBuilds.Size(); ++i) 
 		{
-			// Load the studio model file
-			CUtlBuffer buf;
-			if (!LoadStudioModel(vecBuilds[i].m_pModelName, "prop_static", buf))
+			const char *groupingKey = GetGroupingKey(vecBuilds[i]);
+
+			if (!groupingKey)
 			{
-				Warning("Error loading studio model \"%s\"!\n", vecBuilds[i].m_pModelName);
+				// Add prop as it was not grouped
+				AddStaticPropToLump(vecBuilds[i]);
+				vecBuildAccountedFor[i] = true;
 
 				continue;
 			}
-
-			// Compute the convex hull of the model...
-			studiohdr_t* pStudioHdr = (studiohdr_t*)buf.PeekGet();
-
-			char groupingKey[MAX_GROUPING_KEY];
-			int curGroupingKeyInd = 0;
-
-			for (int cdMatInd = 0; cdMatInd < pStudioHdr->numcdtextures; ++cdMatInd) 
-			{
-				const char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
-
-				// TODO: Sort this stuff
-				// Add textures to key
-				for (int texInd = 0; texInd < pStudioHdr->numtextures; ++texInd) 
-				{
-					V_strcpy(&groupingKey[curGroupingKeyInd], cdMat);
-					curGroupingKeyInd += V_strlen(cdMat);
-
-					mstudiotexture_t *tex = pStudioHdr->pTexture(cdMatInd);
-					const char *texName = tex->pszName();
-					
-					V_strcpy(&groupingKey[curGroupingKeyInd], texName);
-					curGroupingKeyInd += V_strlen(texName);
-				}
-			}
-
-			V_FixSlashes(groupingKey, '/');
-
-			// Add model flags
-			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->flags);
-			curGroupingKeyInd += 8;
-
-			// Add prop flags
-			const int relevantPropFlags = ~(STATIC_PROP_USE_LIGHTING_ORIGIN | STATIC_PROP_FLAG_FADES);
-
-			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", vecBuilds[i].m_Flags & relevantPropFlags);
-			curGroupingKeyInd += 8;
-
-			// Add contents
-			V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->contents);
-			curGroupingKeyInd += 8;
-
-			// Add surfaceprop
-			V_strcpy(&groupingKey[curGroupingKeyInd], pStudioHdr->pszSurfaceProp());
-			curGroupingKeyInd += V_strlen(pStudioHdr->pszSurfaceProp());
-
-			// TODO: Add renderFX
-
-			// TODO: Add tint
 
 			int groupInd = dPropGroups.Find(groupingKey);
 
@@ -1036,6 +1057,79 @@ void EmitStaticProps()
 
 
 		//, then split these groups by the propcombine volume
+		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
+		{
+			entity_t propVolumeEnt = entities[vecPropCombineVolumes[i]];
+
+			Vector clipMins, clipMaxs;
+			clipMins[0] = clipMins[1] = clipMins[2] = MIN_COORD_INTEGER;
+			clipMaxs[0] = clipMaxs[1] = clipMaxs[2] = MAX_COORD_INTEGER;
+
+			bspbrush_t *pBSPBrushList = MakeBspBrushList(propVolumeEnt.firstbrush, propVolumeEnt.firstbrush + propVolumeEnt.numbrushes,
+				clipMins, clipMaxs, NO_DETAIL);
+			ChopBrushes(pBSPBrushList);
+
+			for (int group = 0; group < dPropGroups.Count(); group++)
+			{
+				CUtlVector<int> *groupVec = dPropGroups.Element(group);
+
+				CUtlVector<int> localGroup;
+
+				for (int propInd = 0; propInd < groupVec->Count(); ++propInd)
+				{
+					StaticPropBuild_t propBuild = vecBuilds[groupVec->Element(propInd)];
+
+					// Get the collision model
+					CPhysCollide* pConvexHull = GetCollisionModel(propBuild.m_pModelName);
+					if (!pConvexHull)
+					{
+						AddStaticPropToLump(propBuild);
+						vecBuildAccountedFor[propInd] = true;
+
+						continue;
+					}
+
+
+					Vector mins, maxs;
+					s_pPhysCollision->CollideGetAABB(&mins, &maxs, pConvexHull, propBuild.m_Origin, propBuild.m_Angles);
+
+					bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
+
+					for (bspbrush_t *pBrush = pBSPBrushList; pBrush; pBrush = pBrush->next)
+					{
+						if (IsBoxIntersectingBox(testBrush->mins, testBrush->maxs, pBrush->mins, pBrush->maxs))
+						{
+							bspbrush_t *pIntersect = IntersectBrush(testBrush, pBrush);
+							if (pIntersect)
+							{
+								// Locally group the prop
+								localGroup.AddToTail(propInd);
+								vecBuildAccountedFor[propInd] = true;
+
+								FreeBrush(pIntersect);
+							}
+						}
+					}
+				}
+
+				// TODO: actually combine the local group by writing a qc and building the model
+				for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
+				{
+					AddStaticPropToLump(vecBuilds[localGroupInd]);
+					vecBuildAccountedFor[localGroupInd] = true;
+				}
+			}
+		}
+
+		// Make sure to add ungrouped props
+		for (i = 0; i < vecBuildAccountedFor.Count(); ++i)
+		{
+			if (!vecBuildAccountedFor[i])
+			{
+				AddStaticPropToLump(vecBuilds[i]);
+			}
+		}
+
 		// Then combine these props, create new builds and add to lump
 
 		for (i = vecPropCombineVolumes.Count(); --i >= 0; )
@@ -1045,6 +1139,14 @@ void EmitStaticProps()
 			entities[vecPropCombineVolumes[i]].numbrushes = 0;
 		}
 	}
+	else 
+	{
+		for (i = 0; i < vecBuilds.Count(); ++i) 
+		{
+			AddStaticPropToLump(vecBuilds[i]);
+		}
+	}
+
 #endif
 
 	// Strip out lighting origins; has to be done here because they are used when

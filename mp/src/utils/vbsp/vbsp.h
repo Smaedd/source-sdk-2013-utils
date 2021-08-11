@@ -653,5 +653,9 @@ void RemoveAreaPortalBrushes_R( node_t *node );
 
 dtexdata_t *GetTexData( int index );
 
+// LOL!!!! from brushbsp.cpp
+
+bspbrush_t	*BrushFromBounds(Vector& mins, Vector& maxs);
+
 #endif
 
