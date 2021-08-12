@@ -25,6 +25,7 @@
 #include "KeyValues.h"
 #include "scriplib.h"
 
+#include "../motionmapper/motionmapper.h" // For SMD support
 #define STATIC_PROP_COMBINE_ENABLED
 
 static void SetCurrentModel( studiohdr_t *pStudioHdr );
@@ -806,9 +807,11 @@ void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "models
 	}
 }
 
+#ifdef STATIC_PROP_COMBINE_ENABLED
+
 #define MAX_GROUPING_KEY 256
 
-const char *GetGroupingKey(StaticPropBuild_t build)
+inline const char *GetGroupingKey(StaticPropBuild_t build)
 {
 	// Load the studio model file
 	CUtlBuffer buf;
@@ -872,6 +875,74 @@ const char *GetGroupingKey(StaticPropBuild_t build)
 	return groupingKey;
 }
 
+inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor)
+{
+	CUtlVector<int> localGroup;
+
+	for (int propInd = 0; propInd < keyGroupedProps->Count(); ++propInd)
+	{
+		int buildInd = keyGroupedProps->Element(propInd);
+		if (vecBuildAccountedFor->Element(buildInd))
+			continue;
+
+		StaticPropBuild_t propBuild = vecBuilds->Element(buildInd);
+
+		// Get the collision model
+		CPhysCollide* pConvexHull = GetCollisionModel(propBuild.m_pModelName);
+		if (!pConvexHull)
+		{
+			AddStaticPropToLump(propBuild);
+			vecBuildAccountedFor->Element(buildInd) = true;
+
+			continue;
+		}
+
+
+		Vector mins, maxs;
+		s_pPhysCollision->CollideGetAABB(&mins, &maxs, pConvexHull, propBuild.m_Origin, propBuild.m_Angles);
+
+		bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
+
+		for (bspbrush_t *pBrush = pBSPBrushList; pBrush; pBrush = pBrush->next)
+		{
+			if (IsBoxIntersectingBox(testBrush->mins, testBrush->maxs, pBrush->mins, pBrush->maxs))
+			{
+				bspbrush_t *pIntersect = IntersectBrush(testBrush, pBrush);
+				if (pIntersect)
+				{
+					// Locally group the prop
+					localGroup.AddToTail(buildInd);
+					vecBuildAccountedFor->Element(buildInd) = true;
+
+					FreeBrush(pIntersect);
+				}
+			}
+		}
+	}
+
+	Msg("Group:\n");
+
+	// TODO: actually combine the local group by writing a qc and building the model
+	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
+	{
+		int buildInd = localGroup[localGroupInd];
+
+		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
+		// This updates the s_source thing 
+		// Then combine these into 1 somehow
+		// Then, after all of this, compile into a mdl and add to map
+
+		AddStaticPropToLump(vecBuilds->Element(buildInd));
+		vecBuildAccountedFor->Element(buildInd) = true;
+
+		const Vector &buildOrigin = vecBuilds->Element(buildInd).m_Origin;
+
+		Msg("\t%s : %f %f %f : %d\n", vecBuilds->Element(buildInd).m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
+	}
+}
+
+#endif // STATIC_PROP_COMBINE_ENABLED
+
 
 //-----------------------------------------------------------------------------
 // Places Static Props in the level
@@ -903,7 +974,7 @@ void EmitStaticProps()
 	CUtlVector<StaticPropBuild_t> vecBuilds;
 	CUtlVector<bool> vecBuildAccountedFor;
 
-#endif
+#endif // STATIC_PROP_COMBINE_ENABLED
 
 	// Emit specifically specified static props
 	for ( i = 0; i < num_entities; ++i)
@@ -914,7 +985,7 @@ void EmitStaticProps()
 		{
 			vecPropCombineVolumes.AddToTail(i);
 		} else
-#endif
+#endif // STATIC_PROP_COMBINE_ENABLED
 		if (!strcmp(pEntity, "static_prop") || !strcmp(pEntity, "prop_static"))
 		{
 			StaticPropBuild_t build;
@@ -994,7 +1065,7 @@ void EmitStaticProps()
 
 #else
 			AddStaticPropToLump( build );
-#endif
+#endif // STATIC_PROP_COMBINE_ENABLED
 
 			// strip this ent from the .bsp file
 			entities[i].epairs = 0;
@@ -1030,6 +1101,10 @@ void EmitStaticProps()
 		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
 		for (i = 0; i < vecBuilds.Size(); ++i) 
 		{
+			// This probably won't ever happen but just in case
+			if (vecBuildAccountedFor[i])
+				continue;
+
 			const char *groupingKey = GetGroupingKey(vecBuilds[i]);
 
 			if (!groupingKey)
@@ -1055,6 +1130,20 @@ void EmitStaticProps()
 			dPropGroups[groupInd]->AddToTail(i);
 		}
 
+		Msg("GROUPS PRE-VOLUME:\n");
+		for (i = 0; i < dPropGroups.Count(); ++i) 
+		{
+			Msg("Group %d:\n", i);
+
+			CUtlVector<int> *propGroup = dPropGroups[i];
+			for (int propInd = 0; propInd < propGroup->Count(); ++propInd)
+			{
+				Vector &buildOrigin = vecBuilds[propGroup->Element(propInd)].m_Origin;
+
+				Msg("\t%s : %f %f %f : %d\n", vecBuilds[propGroup->Element(propInd)].m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, propGroup->Element(propInd));
+			}
+		}
+
 
 		//, then split these groups by the propcombine volume
 		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
@@ -1073,51 +1162,7 @@ void EmitStaticProps()
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				CUtlVector<int> localGroup;
-
-				for (int propInd = 0; propInd < groupVec->Count(); ++propInd)
-				{
-					StaticPropBuild_t propBuild = vecBuilds[groupVec->Element(propInd)];
-
-					// Get the collision model
-					CPhysCollide* pConvexHull = GetCollisionModel(propBuild.m_pModelName);
-					if (!pConvexHull)
-					{
-						AddStaticPropToLump(propBuild);
-						vecBuildAccountedFor[propInd] = true;
-
-						continue;
-					}
-
-
-					Vector mins, maxs;
-					s_pPhysCollision->CollideGetAABB(&mins, &maxs, pConvexHull, propBuild.m_Origin, propBuild.m_Angles);
-
-					bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
-
-					for (bspbrush_t *pBrush = pBSPBrushList; pBrush; pBrush = pBrush->next)
-					{
-						if (IsBoxIntersectingBox(testBrush->mins, testBrush->maxs, pBrush->mins, pBrush->maxs))
-						{
-							bspbrush_t *pIntersect = IntersectBrush(testBrush, pBrush);
-							if (pIntersect)
-							{
-								// Locally group the prop
-								localGroup.AddToTail(propInd);
-								vecBuildAccountedFor[propInd] = true;
-
-								FreeBrush(pIntersect);
-							}
-						}
-					}
-				}
-
-				// TODO: actually combine the local group by writing a qc and building the model
-				for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
-				{
-					AddStaticPropToLump(vecBuilds[localGroupInd]);
-					vecBuildAccountedFor[localGroupInd] = true;
-				}
+				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor);
 			}
 		}
 
@@ -1147,7 +1192,7 @@ void EmitStaticProps()
 		}
 	}
 
-#endif
+#endif // STATIC_PROP_COMBINE_ENABLED
 
 	// Strip out lighting origins; has to be done here because they are used when
 	// static props are made

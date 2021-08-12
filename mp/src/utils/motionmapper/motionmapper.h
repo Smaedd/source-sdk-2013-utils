@@ -272,3 +272,6 @@ EXTERN	int numvlist;
 int SortAndBalanceBones( int iCount, int iMaxCount, int bones[], float weights[] );
 void Grab_Vertexanimation( s_source_t *psource );
 extern void BuildIndividualMeshes( s_source_t *psource );
+
+int Load_SMD(s_source_t *psource);
+void Save_SMD(char const *filename, s_source_t *source);
