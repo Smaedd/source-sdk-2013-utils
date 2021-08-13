@@ -232,7 +232,19 @@ QCFile_t::QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetV
 		goto invalidQC;
 
 	char *pPath = new char[MAX_PATH];
-	V_strncpy(pPath, modelName, MAX_PATH);
+	if (V_strncmp(modelName, "models/", 7)) 
+	{
+		V_strncpy(pPath, "models/", 8);
+		V_strncpy(pPath + 7, modelName, MAX_PATH - 7);
+	}
+	else
+	{
+		V_strncpy(pPath, modelName, MAX_PATH);
+	}
+
+	V_FixSlashes(pPath, '/');
+	V_FixDoubleSlashes(pPath);
+	
 	m_pPath = pPath;
 
 	g_pFullFileSystem->FreeOptimalReadBuffer(buffer);
@@ -766,7 +778,7 @@ static void SetLumpData( )
 }
 
 
-void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "modelsrc")
+void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "modelsrc")
 {
 	FileFindHandle_t handle;
 	
@@ -798,7 +810,7 @@ void SearchQCs(CUtlVector<QCFile_t *> &vecQCs, const char *szSearchDir = "models
 					QCFile_t *newQC = new QCFile_t(szSearchDir, szFullPath, &retVal);
 
 					if (retVal)
-						vecQCs.AddToTail(newQC);
+						vecQCs.Insert(newQC->m_pPath, newQC);
 					else
 						delete newQC;
 				}
@@ -875,7 +887,7 @@ inline const char *GetGroupingKey(StaticPropBuild_t build)
 	return groupingKey;
 }
 
-inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor)
+inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, CUtlHashDict<QCFile_t *> &dQCs)
 {
 	CUtlVector<int> localGroup;
 
@@ -922,10 +934,42 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	Msg("Group:\n");
 
+	s_source_t combinedMesh;
+	V_memset(&combinedMesh, 0, sizeof(combinedMesh));
+
+	s_source_t combinedCollisionMesh;
+	V_memset(&combinedCollisionMesh, 0, sizeof(combinedCollisionMesh));
+
 	// TODO: actually combine the local group by writing a qc and building the model
 	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
 	{
 		int buildInd = localGroup[localGroupInd];
+
+		int qcInd = dQCs.Find(vecBuilds->Element(buildInd).m_pModelName);
+		QCFile_t *correspondingQC = dQCs[qcInd];
+
+		// Check first character is null as this is not a pointer :)
+		if (combinedMesh.filename[0] == 0) 
+		{
+			// TODO: prop, phys scale
+
+			// Load the first mesh into the combined meshes
+			V_strcpy(combinedMesh.filename, "../");
+			V_strcpy(combinedCollisionMesh.filename, "../");
+
+			V_strcpy(combinedMesh.filename + 3, correspondingQC->m_pRefSMD);
+			V_strcpy(combinedCollisionMesh.filename + 3, correspondingQC->m_pPhySMD);
+
+			//TODO: Replace this with own function to remove console spam and reliance on motionmapper - replace in motionmapper too (maybe)
+			Load_SMD(&combinedMesh);
+			Load_SMD(&combinedCollisionMesh);
+
+		}
+		else 
+		{
+			// Add to mesh
+		}
+
 
 		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
 		// This updates the s_source thing 
@@ -1086,8 +1130,8 @@ void EmitStaticProps()
 		// Combining algorithm:
 
 		// Load all QCs
-		CUtlVector<QCFile_t *> vecQCs;
-		SearchQCs(vecQCs);
+		CUtlHashDict<QCFile_t *> dQCs;
+		SearchQCs(dQCs);
 
 		// Find prop materials by decompiling or finding qc
 
@@ -1162,7 +1206,7 @@ void EmitStaticProps()
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor);
+				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, dQCs);
 			}
 		}
 

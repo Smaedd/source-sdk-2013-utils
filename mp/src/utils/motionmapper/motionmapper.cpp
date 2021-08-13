@@ -3094,7 +3094,8 @@ void PrintHeader()
 	vprint( 0, "--- Maps motion from one animation/skeleton onto another skeleton ---\n" );
 }
 
-
+// To allow VBSP to use stuff from this file, definitely not the best way to do this
+#ifndef VBSP_DLL
 
 /*
 ==============
@@ -3269,4 +3270,6 @@ int main (int argc, char **argv)
 
 	return 0;
 }
+
+#endif
 
