@@ -24,6 +24,9 @@
 #include "tier1/strtools.h"
 #include "KeyValues.h"
 #include "scriplib.h"
+#include "tier2/fileutils.h"
+#include "tier1/tier1.h"
+#include "vstdlib/iprocessutils.h"
 
 #include "../motionmapper/motionmapper.h" // For SMD support
 #define STATIC_PROP_COMBINE_ENABLED
@@ -823,7 +826,15 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "mode
 
 #define MAX_GROUPING_KEY 256
 
-inline const char *GetGroupingKey(StaticPropBuild_t build)
+#define MAX_SURFACEPROP 32
+
+struct buildvars_t {
+	int contents;
+	char surfaceProp[MAX_SURFACEPROP];
+	char cdMats[MAX_PATH];
+};
+
+inline const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVector<buildvars_t> *vecBuildVars)
 {
 	// Load the studio model file
 	CUtlBuffer buf;
@@ -841,9 +852,15 @@ inline const char *GetGroupingKey(StaticPropBuild_t build)
 	char *groupingKey = new char[MAX_GROUPING_KEY];
 	int curGroupingKeyInd = 0;
 
+	// Create Build Vars
+	buildvars_t buildVars = { 0 };
+	buildVars.contents = pStudioHdr->contents;
+	V_strcpy(buildVars.surfaceProp, pStudioHdr->pszSurfaceProp());
+
 	for (int cdMatInd = 0; cdMatInd < pStudioHdr->numcdtextures; ++cdMatInd)
 	{
 		const char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
+		V_strcpy(buildVars.cdMats, cdMat);
 
 		// TODO: Sort this stuff
 		// Add textures to key
@@ -859,6 +876,8 @@ inline const char *GetGroupingKey(StaticPropBuild_t build)
 			curGroupingKeyInd += V_strlen(texName);
 		}
 	}
+
+	vecBuildVars->AddToTail(buildVars);
 
 	V_FixSlashes(groupingKey, '/');
 
@@ -887,7 +906,241 @@ inline const char *GetGroupingKey(StaticPropBuild_t build)
 	return groupingKey;
 }
 
-inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, CUtlHashDict<QCFile_t *> &dQCs)
+struct reallocinfo_t
+{
+	void **pos;
+	size_t element_size;
+};
+
+inline void reallocMeshSource(s_source_t &combined, const s_source_t &addition)
+{
+	int oldCombinedVerts = combined.numvertices;
+	int oldCombinedFaces = combined.numfaces;
+
+	combined.numvertices += addition.numvertices;
+	combined.numfaces += addition.numfaces;
+
+	reallocinfo_t vertallocinfo[] = {
+		{(void **)&combined.localBoneweight,	sizeof(s_boneweight_t)},
+		{(void **)&combined.vertexInfo,			sizeof(s_vertexinfo_t)},
+		{(void **)&combined.vertex,				sizeof(Vector)},
+		{(void **)&combined.normal,				sizeof(Vector)},
+		{(void **)&combined.tangentS,			sizeof(Vector4D)},
+		{(void **)&combined.texcoord,			sizeof(Vector2D)},
+
+	};
+
+	for (int i = 0; i < (sizeof(vertallocinfo) / sizeof(*vertallocinfo)); ++i) 
+	{
+		void *oldPos = *vertallocinfo[i].pos;
+
+		*vertallocinfo[i].pos = calloc(combined.numvertices, vertallocinfo[i].element_size);
+
+		V_memcpy(*vertallocinfo[i].pos, oldPos, oldCombinedVerts * vertallocinfo[i].element_size);
+
+		free(oldPos);
+	}
+
+	s_face_t *oldFaces = combined.face;
+
+	combined.face = (s_face_t *)calloc(combined.numfaces, sizeof(*oldFaces));
+
+	V_memcpy(combined.face, oldFaces, oldCombinedFaces * sizeof(*oldFaces));
+
+	free(oldFaces);
+}
+
+inline void SaveNodes_Static(s_source_t *source, CUtlBuffer& buf)
+{
+	// Static, 1 node
+	buf.Printf("nodes\n0 \"static_prop\" - 1\nend\n");
+}
+
+inline void SaveSkeleton_Static(s_source_t *source, CUtlBuffer& buf)
+{
+	// Static, no animation
+	buf.Printf("skeleton\ntime 0\n0 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000\nend\n");
+}
+
+inline void SaveTriangles_Static(s_source_t *source, CUtlBuffer& buf)
+{
+	buf.Printf("triangles\n");
+
+	// Face
+	for (int face = 0; face < source->numfaces; ++face)
+	{
+		int texIndex = g_material[source->face[face].material];
+		const char *texName = g_texture[texIndex].name;
+		buf.Printf("%s\n", texName);
+
+		// Vertex
+		for (int vert = 0; vert < 3; vert++)
+		{
+			unsigned long vertInd = source->face[face].verts[vert];
+
+			// No parent bone (Might be wrong)
+			buf.Printf("0\t\t");
+
+			// Position
+			buf.Printf("%f %f %f\t", source->vertex[vertInd].x, source->vertex[vertInd].y, source->vertex[vertInd].z);
+
+			// Normal
+			buf.Printf("%f %f %f\t", source->normal[vertInd].x, source->normal[vertInd].y, source->normal[vertInd].z);
+
+			// UV
+			buf.Printf("%f %f\n", source->texcoord[vertInd].x, 1 - source->texcoord[vertInd].y); // needs 1 - for some reason???
+		}
+
+	}
+}
+
+// Modified Save_SMD that actually saves the whole smd
+void Save_SMD_Static(char const *filename, s_source_t *source)
+{
+	// Text buffer
+	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
+
+	// Header
+	buf.Printf("version 1\n");
+
+	// Nodes
+	SaveNodes_Static(source, buf);
+
+	// Skeleton
+	SaveSkeleton_Static(source, buf);
+
+	// Triangles
+	SaveTriangles_Static(source, buf);
+
+	FileHandle_t fh = g_pFileSystem->Open(filename, "wb");
+	if (FILESYSTEM_INVALID_HANDLE != fh)
+	{
+		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
+		g_pFileSystem->Close(fh);
+	}
+}
+
+inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, const Vector &additionOrigin, const QAngle &additionAngles, float scale)
+{
+	if (addition.numvertices == 0) // Nothing to add
+		return;
+
+	int rootBone = -1;
+
+	for (int bone = 0; bone < combined.numbones; bone++)
+	{
+		if (combined.localBone[bone].parent == -1) // child of the world
+		{
+			rootBone = bone;
+			break;
+		}
+	}
+
+	if (rootBone == -1)
+	{
+		Warning("No root bone found in %s. Not combining.\n", addition.filename);
+		return;
+	}
+
+	// Set root bone
+	s_boneweight_t boneLink;
+	boneLink.numbones = 1;
+	boneLink.bone[0] = rootBone;
+	boneLink.weight[0] = 1.0;
+
+	matrix3x4_t rotMatrix;
+	AngleMatrix(additionAngles, rotMatrix);
+
+	int oldNumVertices = combined.numvertices;
+	int oldNumFaces = combined.numfaces;
+
+	// Might be slow :)
+	reallocMeshSource(combined, addition);
+
+	for (int face = 0; face < addition.numfaces; face++)
+	{
+		int combinedFaceNum = oldNumFaces + face;
+
+		s_face_t addedFace = addition.face[face];
+
+		for (int vert = 0; vert < 3; vert++)
+		{
+			int meshVertNum = addedFace.verts[vert];
+
+			int combinedVertNum = oldNumVertices + meshVertNum;
+
+			combined.localBoneweight[combinedVertNum]	= boneLink;
+			combined.vertexInfo[combinedVertNum]		= addition.vertexInfo[meshVertNum];
+			combined.tangentS[combinedVertNum]			= addition.tangentS[meshVertNum];
+			combined.texcoord[combinedVertNum]			= addition.texcoord[meshVertNum];
+
+			VectorTransform(addition.normal[meshVertNum], rotMatrix, combined.normal[combinedVertNum]);
+			VectorTransform(addition.vertex[meshVertNum], rotMatrix, combined.vertex[combinedVertNum]);
+			combined.vertex[combinedVertNum] *= scale;
+			combined.vertex[combinedVertNum] += additionOrigin;
+			
+			addedFace.verts[vert] = combinedVertNum;
+		}
+
+		combined.face[combinedFaceNum] = addedFace;
+	}
+}
+
+inline void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char *cdmaterials, int contents)
+{
+	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
+
+	buf.Printf("$staticprop\n");
+
+	char modelname_file[MAX_PATH];
+	V_FileBase(modelname, modelname_file, MAX_PATH);
+	V_SetExtension(modelname_file, "mdl", MAX_PATH);
+
+	buf.Printf("$modelname \"%s\"\n", modelname_file);
+	buf.Printf("$surfaceprop \"%s\"\n", surfaceprop);
+
+	char refpath_file[MAX_PATH];
+	V_FileBase(refpath, refpath_file, MAX_PATH);
+	V_SetExtension(refpath_file, "smd", MAX_PATH);
+	buf.Printf("$body body \"%s\"\n", refpath_file);
+
+	buf.Printf("$contents %d\n", contents);
+
+	char animpath_file[MAX_PATH];
+	V_FileBase(animpath, animpath_file, MAX_PATH);
+	V_SetExtension(animpath_file, "smd", MAX_PATH);
+	buf.Printf("$sequence idle %s act_idle 1\n", animpath_file);
+
+	char phypath_file[MAX_PATH];
+	V_FileBase(phypath, phypath_file, MAX_PATH);
+	V_SetExtension(phypath_file, "smd", MAX_PATH);
+	buf.Printf("$collisionmodel \"%s\" {\n", phypath_file);
+	buf.Printf("$maxconvexpieces 2048\n");
+	buf.Printf("$automass\n");
+	buf.Printf("$concave\n}\n");
+
+	FileHandle_t fh = g_pFileSystem->Open(filename, "wb");
+	if (FILESYSTEM_INVALID_HANDLE != fh)
+	{
+		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
+		g_pFileSystem->Close(fh);
+	}
+}
+
+inline void SaveSampleAnimFile(const char *filename) {
+	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
+
+	buf.Printf("version 1\nnodes\n0 \"static_prop\" -1\nend\nskeleton\ntime 0\n0 0 0 0 0 0 0\nend\n");
+
+	FileHandle_t fh = g_pFileSystem->Open(filename, "wb");
+	if (FILESYSTEM_INVALID_HANDLE != fh)
+	{
+		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
+		g_pFileSystem->Close(fh);
+	}
+}
+
+inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs)
 {
 	CUtlVector<int> localGroup;
 
@@ -932,6 +1185,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		}
 	}
 
+	if (localGroup.Count() < 1)
+		return;
+
 	Msg("Group:\n");
 
 	s_source_t combinedMesh;
@@ -960,7 +1216,6 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 			V_strcpy(combinedMesh.filename + 3, correspondingQC->m_pRefSMD);
 			V_strcpy(combinedCollisionMesh.filename + 3, correspondingQC->m_pPhySMD);
 
-			//TODO: Replace this with own function to remove console spam and reliance on motionmapper - replace in motionmapper too (maybe)
 			Load_SMD(&combinedMesh);
 			Load_SMD(&combinedCollisionMesh);
 
@@ -968,6 +1223,29 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		else 
 		{
 			// Add to mesh
+
+			s_source_t additionMesh;
+			V_memset(&additionMesh, 0, sizeof(additionMesh));
+
+			s_source_t additionCollisionMesh;
+			V_memset(&additionCollisionMesh, 0, sizeof(additionCollisionMesh));
+
+			// Load the mesh into the addition meshes
+			V_strcpy(additionMesh.filename, "../");
+			V_strcpy(additionCollisionMesh.filename, "../");
+
+			V_strcpy(additionMesh.filename + 3, correspondingQC->m_pRefSMD);
+			V_strcpy(additionCollisionMesh.filename + 3, correspondingQC->m_pPhySMD);
+
+			Load_SMD(&additionMesh);
+			Load_SMD(&additionCollisionMesh);
+
+			Vector offsetOrigin = vecBuilds->Element(buildInd).m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
+
+			CombineMeshes(combinedMesh, additionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flRefScale);
+			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flPhyScale);
+
+			//TODO: Free addition meshes
 		}
 
 
@@ -983,6 +1261,58 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 		Msg("\t%s : %f %f %f : %d\n", vecBuilds->Element(buildInd).m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
+
+	char pTempFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
+	V_SetExtension(pTempFilePath, "smd", MAX_PATH);
+
+	char pTempCollisionFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempCollisionFilePath, MAX_PATH);
+	V_SetExtension(pTempCollisionFilePath, "smd", MAX_PATH);
+
+	char pTempAnimFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempAnimFilePath, MAX_PATH);
+	V_SetExtension(pTempAnimFilePath, "smd", MAX_PATH);
+
+	SaveSampleAnimFile(pTempAnimFilePath);
+
+	char pQCFilePath[MAX_PATH];
+	V_strcpy(pQCFilePath, pTempFilePath);
+	V_SetExtension(pQCFilePath, "qc", MAX_PATH);
+
+	buildvars_t &buildVars = vecBuildVars->Element(localGroup[0]);
+
+	char pModelName[MAX_PATH];
+	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
+	V_SetExtension(pModelName, "mdl", MAX_PATH);
+
+	SaveQCFile(pQCFilePath, pModelName, pTempFilePath,
+		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents);
+
+	char pBinDirectory[MAX_PATH];
+	GetModSubdirectory("..\\bin", pBinDirectory, sizeof(pBinDirectory));
+	Q_RemoveDotSlashes(pBinDirectory);
+
+	char pStudioMDLCmd[MAX_PATH];
+	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pBinDirectory);
+
+	char pGameDirectory[MAX_PATH];
+	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
+	Q_RemoveDotSlashes(pGameDirectory);
+
+	// TODO: Nothing happens
+	char *argv[] =
+	{
+		"-game",
+		pGameDirectory,
+		pQCFilePath,
+		NULL
+	};
+
+	_spawnv(_P_NOWAIT, pStudioMDLCmd, argv);
+
+	scriptlib->DeleteTemporaryFiles("*.smd");
+	scriptlib->DeleteTemporaryFiles("*.qc");
 }
 
 #endif // STATIC_PROP_COMBINE_ENABLED
@@ -1140,6 +1470,8 @@ void EmitStaticProps()
 
 		// Pair key to group, by index in vecBuilds
 		CUtlHashDict<CUtlVector<int> *> dPropGroups;
+
+		CUtlVector<buildvars_t> vecBuildVars;
 		
 		// Create grouping key for each
 		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
@@ -1149,7 +1481,7 @@ void EmitStaticProps()
 			if (vecBuildAccountedFor[i])
 				continue;
 
-			const char *groupingKey = GetGroupingKey(vecBuilds[i]);
+			const char *groupingKey = GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
 
 			if (!groupingKey)
 			{
@@ -1188,6 +1520,13 @@ void EmitStaticProps()
 			}
 		}
 
+		// Setup motionmapper globals
+		g_currentscale = g_defaultscale = 1.0;
+		g_defaultrotation = RadianEuler(0, 0, M_PI / 2);
+
+		flip_triangles = 0;
+		normal_blend = 2.0f; // Never blend
+
 
 		//, then split these groups by the propcombine volume
 		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
@@ -1206,7 +1545,7 @@ void EmitStaticProps()
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, dQCs);
+				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs);
 			}
 		}
 

@@ -678,7 +678,10 @@ void ParseFaceData( s_source_t *psource, int material, s_face_t *pFace )
 		}
 	}
 
-	// pFace->material = material; // BUG
+#ifdef VBSP_DLL
+	pFace->material = material;
+#endif
+
 	pFace->a		= index[0];
 	pFace->b		= index[1];
 	pFace->c		= index[2];
@@ -1209,6 +1212,9 @@ void BuildIndividualMeshes( s_source_t *psource )
 			{
 				j = facesort[i];
 
+#ifdef VBSP_DLL
+				psource->face[i].material = g_src_uface[j].material;
+#endif
 				psource->face[i].a = v_ilistsort[g_src_uface[j].a] - psource->mesh[k].vertexoffset;
 				psource->face[i].b = v_ilistsort[g_src_uface[j].b] - psource->mesh[k].vertexoffset;
 				psource->face[i].c = v_ilistsort[g_src_uface[j].c] - psource->mesh[k].vertexoffset;
