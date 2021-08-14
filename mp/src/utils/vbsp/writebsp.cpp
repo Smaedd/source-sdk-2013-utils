@@ -1263,8 +1263,16 @@ void EndBSPFile (void)
 	// to zero everywhere by default.
 	ClearDistToClosestWater();
 
+	char fileName[1024];
+	V_strncpy(fileName, source, sizeof(fileName));
+	V_DefaultExtension(fileName, ".bsp", sizeof(fileName));
+
 	// Emit static props found in the .vmf file
-	EmitStaticProps();
+#ifdef STATIC_PROP_COMBINE_ENABLED
+		EmitStaticProps(fileName);
+#else
+		EmitStaticProps();
+#endif
 
 	// Place detail props found in .vmf and based on material properties
 	EmitDetailObjects();
@@ -1284,9 +1292,6 @@ void EndBSPFile (void)
 	// Figure out which faces want macro textures.
 	DiscoverMacroTextures();
 
-	char fileName[1024];
-	V_strncpy( fileName, source, sizeof( fileName ) );
-	V_DefaultExtension( fileName, ".bsp", sizeof( fileName ) );
 	Msg ("Writing %s\n", fileName);
 	WriteBSPFile (fileName);
 }

@@ -26,6 +26,8 @@
 
 class CUtlBuffer;
 
+#define STATIC_PROP_COMBINE_ENABLED
+
 #define	MAX_BRUSH_SIDES	128
 #define	CLIP_EPSILON	0.1
 
@@ -421,15 +423,19 @@ void EmitDetailObjects();
 // static props
 //=============================================================================
 
+#ifdef STATIC_PROP_COMBINE_ENABLED
+void EmitStaticProps(const char *szMapName);
+#else
 void EmitStaticProps();
+#endif
+
+
 bool LoadStudioModel( char const* pFileName, char const* pEntityType, CUtlBuffer& buf );
 
 //=============================================================================
 //=============================================================================
 // procedurally created .vmt files
 //=============================================================================
-
-void EmitStaticProps();
 
 // draw.c
 

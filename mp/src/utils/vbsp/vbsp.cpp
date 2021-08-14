@@ -1342,7 +1342,11 @@ int RunVBSP( int argc, char **argv )
 		// vrad, EmitStaticProps should be removed here
 
 		// Emit static props found in the .vmf file
+#ifdef STATIC_PROP_COMBINE_ENABLED
+		EmitStaticProps(mapFile);
+#else
 		EmitStaticProps();
+#endif
 
 		// NOTE: Don't deal with detail props here, it blows away lighting
 
@@ -1370,7 +1374,11 @@ int RunVBSP( int argc, char **argv )
 		SetLightStyles();
 
 		// Emit static props found in the .vmf file
+#ifdef STATIC_PROP_COMBINE_ENABLED
+		EmitStaticProps(mapFile);
+#else
 		EmitStaticProps();
+#endif
 
 		// Place detail props found in .vmf and based on material properties
 		LoadEmitDetailObjectDictionary( gamedir );

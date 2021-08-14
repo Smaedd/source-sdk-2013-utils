@@ -29,7 +29,6 @@
 #include "vstdlib/iprocessutils.h"
 
 #include "../motionmapper/motionmapper.h" // For SMD support
-#define STATIC_PROP_COMBINE_ENABLED
 
 static void SetCurrentModel( studiohdr_t *pStudioHdr );
 static void FreeCurrentModelVertexes();
@@ -1048,6 +1047,10 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 	boneLink.bone[0] = rootBone;
 	boneLink.weight[0] = 1.0;
 
+	QAngle correctionAngle = QAngle(0, -90, 0);
+	Vector correctedOffset;
+	VectorRotate(additionOrigin, correctionAngle, correctedOffset);
+
 	matrix3x4_t rotMatrix;
 	AngleMatrix(additionAngles, rotMatrix);
 
@@ -1077,7 +1080,7 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 			VectorTransform(addition.normal[meshVertNum], rotMatrix, combined.normal[combinedVertNum]);
 			VectorTransform(addition.vertex[meshVertNum], rotMatrix, combined.vertex[combinedVertNum]);
 			combined.vertex[combinedVertNum] *= scale;
-			combined.vertex[combinedVertNum] += additionOrigin;
+			combined.vertex[combinedVertNum] += correctedOffset;
 			
 			addedFace.verts[vert] = combinedVertNum;
 		}
@@ -1093,7 +1096,7 @@ inline void SaveQCFile(const char *filename, const char *modelname, const char *
 	buf.Printf("$staticprop\n");
 
 	char modelname_file[MAX_PATH];
-	V_FileBase(modelname, modelname_file, MAX_PATH);
+	V_strcpy(modelname_file, modelname);
 	V_SetExtension(modelname_file, "mdl", MAX_PATH);
 
 	buf.Printf("$modelname \"%s\"\n", modelname_file);
@@ -1110,6 +1113,8 @@ inline void SaveQCFile(const char *filename, const char *modelname, const char *
 	V_FileBase(animpath, animpath_file, MAX_PATH);
 	V_SetExtension(animpath_file, "smd", MAX_PATH);
 	buf.Printf("$sequence idle %s act_idle 1\n", animpath_file);
+
+	buf.Printf("$cdmaterials \"%s\"\n", cdmaterials);
 
 	char phypath_file[MAX_PATH];
 	V_FileBase(phypath, phypath_file, MAX_PATH);
@@ -1139,6 +1144,8 @@ inline void SaveSampleAnimFile(const char *filename) {
 		g_pFileSystem->Close(fh);
 	}
 }
+
+const char *g_szMapFileName;
 
 inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs)
 {
@@ -1253,8 +1260,6 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		// This updates the s_source thing 
 		// Then combine these into 1 somehow
 		// Then, after all of this, compile into a mdl and add to map
-
-		AddStaticPropToLump(vecBuilds->Element(buildInd));
 		vecBuildAccountedFor->Element(buildInd) = true;
 
 		const Vector &buildOrigin = vecBuilds->Element(buildInd).m_Origin;
@@ -1274,6 +1279,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	scriptlib->MakeTemporaryFilename(gamedir, pTempAnimFilePath, MAX_PATH);
 	V_SetExtension(pTempAnimFilePath, "smd", MAX_PATH);
 
+	Save_SMD_Static(pTempFilePath, &combinedMesh);
+	Save_SMD_Static(pTempCollisionFilePath, &combinedCollisionMesh);
+
 	SaveSampleAnimFile(pTempAnimFilePath);
 
 	char pQCFilePath[MAX_PATH];
@@ -1284,17 +1292,20 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	char pModelName[MAX_PATH];
 	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
-	V_SetExtension(pModelName, "mdl", MAX_PATH);
+	
+	char pMapBase[MAX_PATH];
+	V_FileBase(g_szMapFileName, pMapBase, MAX_PATH);
 
-	SaveQCFile(pQCFilePath, pModelName, pTempFilePath,
+	char pFullModelPath[MAX_PATH];
+	V_snprintf(pFullModelPath, MAX_PATH, "maps\\%s\\%s", pMapBase, pModelName);
+	V_SetExtension(pFullModelPath, "mdl", MAX_PATH);
+
+	SaveQCFile(pQCFilePath, pFullModelPath, pTempFilePath,
 		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents);
-
-	char pBinDirectory[MAX_PATH];
-	GetModSubdirectory("..\\bin", pBinDirectory, sizeof(pBinDirectory));
-	Q_RemoveDotSlashes(pBinDirectory);
-
+	//
 	char pStudioMDLCmd[MAX_PATH];
-	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pBinDirectory);
+	FileSystem_GetExecutableDir(pStudioMDLCmd, MAX_PATH);
+	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pStudioMDLCmd);
 
 	char pGameDirectory[MAX_PATH];
 	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
@@ -1309,10 +1320,15 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		NULL
 	};
 
-	_spawnv(_P_NOWAIT, pStudioMDLCmd, argv);
+	_spawnv(_P_WAIT, pStudioMDLCmd, argv);
 
-	scriptlib->DeleteTemporaryFiles("*.smd");
-	scriptlib->DeleteTemporaryFiles("*.qc");
+	char pModelBuildName[MAX_PATH];
+	V_snprintf(pModelBuildName, sizeof(pModelBuildName), "models\\%s", pFullModelPath);
+
+	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup[0]);
+	newBuild.m_pModelName = V_strdup(pModelBuildName);
+
+	AddStaticPropToLump(newBuild);
 }
 
 #endif // STATIC_PROP_COMBINE_ENABLED
@@ -1322,8 +1338,18 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 // Places Static Props in the level
 //-----------------------------------------------------------------------------
 
+#ifdef STATIC_PROP_COMBINE_ENABLED
+void EmitStaticProps(const char *szMapName)
+#else
 void EmitStaticProps()
+#endif
 {
+
+#ifdef STATIC_PROP_COMBINE_ENABLED
+	g_szMapFileName = szMapName;
+#endif
+
+
 	CreateInterfaceFn physicsFactory = GetPhysicsFactory();
 	if ( physicsFactory )
 	{
@@ -1461,6 +1487,7 @@ void EmitStaticProps()
 
 		// Load all QCs
 		CUtlHashDict<QCFile_t *> dQCs;
+		dQCs.Purge();
 		SearchQCs(dQCs);
 
 		// Find prop materials by decompiling or finding qc
@@ -1470,6 +1497,7 @@ void EmitStaticProps()
 
 		// Pair key to group, by index in vecBuilds
 		CUtlHashDict<CUtlVector<int> *> dPropGroups;
+		dPropGroups.Purge();
 
 		CUtlVector<buildvars_t> vecBuildVars;
 		
@@ -1548,6 +1576,10 @@ void EmitStaticProps()
 				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs);
 			}
 		}
+
+		// TODO: Delete temp files, can't do it with how processes are spawned currently
+// 		scriptlib->DeleteTemporaryFiles("*.smd");
+// 		scriptlib->DeleteTemporaryFiles("*.qc");
 
 		// Make sure to add ungrouped props
 		for (i = 0; i < vecBuildAccountedFor.Count(); ++i)
