@@ -1124,7 +1124,14 @@ inline void SaveSampleAnimFile(const char *filename) {
 
 const char *g_szMapFileName;
 
-inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs)
+struct loaded_model_smds_t 
+{
+	s_source_t refSMD;
+	s_source_t phySMD;
+};
+
+inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, 
+	CUtlVector<buildvars_t> *vecBuildVars, const CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
 {
 	CUtlVector<int> localGroup;
 
@@ -1188,32 +1195,36 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		int qcInd = dQCs.Find(vecBuilds->Element(buildInd).m_pModelName);
 		QCFile_t *correspondingQC = dQCs[qcInd];
 
+		// Add to mesh
+			
+		int smdInd = dLoadedSMDs.Find(vecBuilds->Element(buildInd).m_pModelName);
+		if (!dLoadedSMDs.IsValidIndex(smdInd))
 		{
-			// Add to mesh
+			smdInd = dLoadedSMDs.Insert(vecBuilds->Element(buildInd).m_pModelName);
 
-			s_source_t additionMesh;
-			V_memset(&additionMesh, 0, sizeof(additionMesh));
+			loaded_model_smds_t &loadingSMD = dLoadedSMDs.Element(smdInd);
 
-			s_source_t additionCollisionMesh;
-			V_memset(&additionCollisionMesh, 0, sizeof(additionCollisionMesh));
+			V_memset(&loadingSMD.refSMD, 0, sizeof(s_source_t));
+			V_memset(&loadingSMD.phySMD, 0, sizeof(s_source_t));
 
 			// Load the mesh into the addition meshes
-			V_strcpy(additionMesh.filename, "../");
-			V_strcpy(additionCollisionMesh.filename, "../");
+			V_strcpy(loadingSMD.refSMD.filename, "../");
+			V_strcpy(loadingSMD.phySMD.filename, "../");
 
-			V_strcpy(additionMesh.filename + 3, correspondingQC->m_pRefSMD);
-			V_strcpy(additionCollisionMesh.filename + 3, correspondingQC->m_pPhySMD);
+			V_strcpy(loadingSMD.refSMD.filename + 3, correspondingQC->m_pRefSMD);
+			V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
 
-			Load_SMD(&additionMesh);
-			Load_SMD(&additionCollisionMesh);
-
-			Vector offsetOrigin = vecBuilds->Element(buildInd).m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
-
-			CombineMeshes(combinedMesh, additionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flRefScale);
-			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flPhyScale);
-
-			//TODO: Free addition meshes
+			Load_SMD(&loadingSMD.refSMD);
+			Load_SMD(&loadingSMD.phySMD);
 		}
+
+		s_source_t &additionMesh = dLoadedSMDs.Element(smdInd).refSMD;
+		s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
+
+		Vector offsetOrigin = vecBuilds->Element(buildInd).m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
+
+		CombineMeshes(combinedMesh, additionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flRefScale);
+		CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flPhyScale);
 
 
 		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
@@ -1516,6 +1527,9 @@ void EmitStaticProps()
 		flip_triangles = 0;
 		normal_blend = 2.0f; // Never blend
 
+		CUtlHashDict<loaded_model_smds_t> dLoadedSMDs;
+		dLoadedSMDs.Purge();
+
 
 		//, then split these groups by the propcombine volume
 		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
@@ -1534,7 +1548,7 @@ void EmitStaticProps()
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs);
+				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs, dLoadedSMDs);
 			}
 		}
 
