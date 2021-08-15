@@ -920,11 +920,8 @@ inline void reallocMeshSource(s_source_t &combined, const s_source_t &addition)
 	combined.numfaces += addition.numfaces;
 
 	reallocinfo_t vertallocinfo[] = {
-		{(void **)&combined.localBoneweight,	sizeof(s_boneweight_t)},
-		{(void **)&combined.vertexInfo,			sizeof(s_vertexinfo_t)},
 		{(void **)&combined.vertex,				sizeof(Vector)},
 		{(void **)&combined.normal,				sizeof(Vector)},
-		{(void **)&combined.tangentS,			sizeof(Vector4D)},
 		{(void **)&combined.texcoord,			sizeof(Vector2D)},
 
 	};
@@ -937,7 +934,8 @@ inline void reallocMeshSource(s_source_t &combined, const s_source_t &addition)
 
 		V_memcpy(*vertallocinfo[i].pos, oldPos, oldCombinedVerts * vertallocinfo[i].element_size);
 
-		free(oldPos);
+		if(oldPos)
+			free(oldPos);
 	}
 
 	s_face_t *oldFaces = combined.face;
@@ -946,7 +944,8 @@ inline void reallocMeshSource(s_source_t &combined, const s_source_t &addition)
 
 	V_memcpy(combined.face, oldFaces, oldCombinedFaces * sizeof(*oldFaces));
 
-	free(oldFaces);
+	if (oldFaces)
+		free(oldFaces);
 }
 
 inline void SaveNodes_Static(s_source_t *source, CUtlBuffer& buf)
@@ -1024,35 +1023,18 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 	if (addition.numvertices == 0) // Nothing to add
 		return;
 
-	int rootBone = -1;
-
-	for (int bone = 0; bone < combined.numbones; bone++)
-	{
-		if (combined.localBone[bone].parent == -1) // child of the world
-		{
-			rootBone = bone;
-			break;
-		}
-	}
-
-	if (rootBone == -1)
-	{
-		Warning("No root bone found in %s. Not combining.\n", addition.filename);
-		return;
-	}
-
-	// Set root bone
-	s_boneweight_t boneLink;
-	boneLink.numbones = 1;
-	boneLink.bone[0] = rootBone;
-	boneLink.weight[0] = 1.0;
-
 	QAngle correctionAngle = QAngle(0, -90, 0);
 	Vector correctedOffset;
 	VectorRotate(additionOrigin, correctionAngle, correctedOffset);
 
+	QAngle correctedAngle = QAngle(-additionAngles.z, additionAngles.y, additionAngles.x);
+
 	matrix3x4_t rotMatrix;
-	AngleMatrix(additionAngles, rotMatrix);
+	AngleMatrix(correctedAngle, rotMatrix);
+
+	matrix3x4_t transformMatrix = rotMatrix;
+	MatrixScaleBy(scale, transformMatrix);
+	MatrixSetColumn(correctedOffset, 3, transformMatrix);
 
 	int oldNumVertices = combined.numvertices;
 	int oldNumFaces = combined.numfaces;
@@ -1072,15 +1054,10 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 
 			int combinedVertNum = oldNumVertices + meshVertNum;
 
-			combined.localBoneweight[combinedVertNum]	= boneLink;
-			combined.vertexInfo[combinedVertNum]		= addition.vertexInfo[meshVertNum];
-			combined.tangentS[combinedVertNum]			= addition.tangentS[meshVertNum];
 			combined.texcoord[combinedVertNum]			= addition.texcoord[meshVertNum];
 
+			VectorTransform(addition.vertex[meshVertNum], transformMatrix, combined.vertex[combinedVertNum]);
 			VectorTransform(addition.normal[meshVertNum], rotMatrix, combined.normal[combinedVertNum]);
-			VectorTransform(addition.vertex[meshVertNum], rotMatrix, combined.vertex[combinedVertNum]);
-			combined.vertex[combinedVertNum] *= scale;
-			combined.vertex[combinedVertNum] += correctedOffset;
 			
 			addedFace.verts[vert] = combinedVertNum;
 		}
@@ -1211,23 +1188,6 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		int qcInd = dQCs.Find(vecBuilds->Element(buildInd).m_pModelName);
 		QCFile_t *correspondingQC = dQCs[qcInd];
 
-		// Check first character is null as this is not a pointer :)
-		if (combinedMesh.filename[0] == 0) 
-		{
-			// TODO: prop, phys scale
-
-			// Load the first mesh into the combined meshes
-			V_strcpy(combinedMesh.filename, "../");
-			V_strcpy(combinedCollisionMesh.filename, "../");
-
-			V_strcpy(combinedMesh.filename + 3, correspondingQC->m_pRefSMD);
-			V_strcpy(combinedCollisionMesh.filename + 3, correspondingQC->m_pPhySMD);
-
-			Load_SMD(&combinedMesh);
-			Load_SMD(&combinedCollisionMesh);
-
-		}
-		else 
 		{
 			// Add to mesh
 
@@ -1327,6 +1287,7 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup[0]);
 	newBuild.m_pModelName = V_strdup(pModelBuildName);
+	newBuild.m_Angles = QAngle(0, 0, 0); // TODO: Change base model (maybe just by combining with nothing?)
 
 	AddStaticPropToLump(newBuild);
 }
