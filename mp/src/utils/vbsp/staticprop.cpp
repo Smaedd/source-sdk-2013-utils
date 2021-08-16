@@ -87,6 +87,9 @@ public:
 	QCFile_t();
 	QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetVal = NULL);
 	~QCFile_t();
+
+private:
+
 };
 
 QCFile_t::QCFile_t()
@@ -165,12 +168,15 @@ QCFile_t::QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetV
 
 		if (!V_stricmp(token, "$bodygroup") || !V_stricmp(token, "$body") || !V_stricmp(token, "$model"))
 		{
-			if (!GetToken(true))
+			if (!GetToken(true)) // Group name
+				goto invalidQC;
+
+			if (!GetToken(true)) 
 				goto invalidQC;
 
 			if (V_strcmp(token, "{")) // String
 			{
-				if (m_pRefSMD || !GetToken(true))
+				if (m_pRefSMD)
 					goto invalidQC;
 
 				char *pRefSMD = new char[MAX_PATH];
@@ -182,12 +188,15 @@ QCFile_t::QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetV
 			}
 
 			// Brace open
-			while (GetToken(true) && !V_strcmp(token, "}"))
+			while (GetToken(true) && V_strcmp(token, "}"))
 			{
 				if (!V_stricmp(token, "studio"))
 				{
 					if (m_pRefSMD)
-						goto invalidQC;
+					{
+						// goto invalidQC; // try to allow this by just using the first one
+						continue;
+					}
 
 					if (!GetToken(true))
 						goto invalidQC;
@@ -779,8 +788,9 @@ static void SetLumpData( )
 		buf.Put( s_StaticPropLump.Base(), objsize );
 }
 
+#ifdef STATIC_PROP_COMBINE_ENABLED
 
-void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "modelsrc")
+void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir = "modelsrc")
 {
 	FileFindHandle_t handle;
 	
@@ -799,7 +809,7 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "mode
 
 			if (g_pFullFileSystem->FindIsDirectory(handle))
 			{
-				SearchQCs(vecQCs, szFullPath);
+				SearchQCs(dQCs, szFullPath);
 			}
 			else
 			{
@@ -812,7 +822,7 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "mode
 					QCFile_t *newQC = new QCFile_t(szSearchDir, szFullPath, &retVal);
 
 					if (retVal)
-						vecQCs.Insert(newQC->m_pPath, newQC);
+						dQCs.Insert(newQC->m_pPath, newQC);
 					else
 						delete newQC;
 				}
@@ -821,7 +831,7 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &vecQCs, const char *szSearchDir = "mode
 	}
 }
 
-#ifdef STATIC_PROP_COMBINE_ENABLED
+
 
 #define MAX_GROUPING_KEY 256
 
@@ -901,6 +911,8 @@ inline const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, 
 	// TODO: Add renderFX
 
 	// TODO: Add tint
+
+	buf.Clear();
 
 	return groupingKey;
 }
@@ -1016,6 +1028,8 @@ void Save_SMD_Static(char const *filename, s_source_t *source)
 		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
 		g_pFileSystem->Close(fh);
 	}
+
+	buf.Clear();
 }
 
 inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, const Vector &additionOrigin, const QAngle &additionAngles, float scale)
@@ -1023,11 +1037,11 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 	if (addition.numvertices == 0) // Nothing to add
 		return;
 
-	QAngle correctionAngle = QAngle(0, -90, 0);
+	QAngle correctionAngle = QAngle(0, 0, 0);
 	Vector correctedOffset;
 	VectorRotate(additionOrigin, correctionAngle, correctedOffset);
 
-	QAngle correctedAngle = QAngle(-additionAngles.z, additionAngles.y, additionAngles.x);
+	QAngle correctedAngle = QAngle(additionAngles.x, additionAngles.y, additionAngles.z);
 
 	matrix3x4_t rotMatrix;
 	AngleMatrix(correctedAngle, rotMatrix);
@@ -1066,7 +1080,7 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 	}
 }
 
-inline void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char *cdmaterials, int contents)
+inline void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char *cdmaterials, int contents, bool hasCollision)
 {
 	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
 
@@ -1093,13 +1107,16 @@ inline void SaveQCFile(const char *filename, const char *modelname, const char *
 
 	buf.Printf("$cdmaterials \"%s\"\n", cdmaterials);
 
-	char phypath_file[MAX_PATH];
-	V_FileBase(phypath, phypath_file, MAX_PATH);
-	V_SetExtension(phypath_file, "smd", MAX_PATH);
-	buf.Printf("$collisionmodel \"%s\" {\n", phypath_file);
-	buf.Printf("$maxconvexpieces 2048\n");
-	buf.Printf("$automass\n");
-	buf.Printf("$concave\n}\n");
+	if (hasCollision)
+	{
+		char phypath_file[MAX_PATH];
+		V_FileBase(phypath, phypath_file, MAX_PATH);
+		V_SetExtension(phypath_file, "smd", MAX_PATH);
+		buf.Printf("$collisionmodel \"%s\" {\n", phypath_file);
+		buf.Printf("$maxconvexpieces 2048\n");
+		buf.Printf("$automass\n");
+		buf.Printf("$concave\n}\n");
+	}
 
 	FileHandle_t fh = g_pFileSystem->Open(filename, "wb");
 	if (FILESYSTEM_INVALID_HANDLE != fh)
@@ -1107,6 +1124,8 @@ inline void SaveQCFile(const char *filename, const char *modelname, const char *
 		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
 		g_pFileSystem->Close(fh);
 	}
+
+	buf.Clear();
 }
 
 inline void SaveSampleAnimFile(const char *filename) {
@@ -1120,6 +1139,8 @@ inline void SaveSampleAnimFile(const char *filename) {
 		g_pFileSystem->Write(buf.Base(), buf.TellPut(), fh);
 		g_pFileSystem->Close(fh);
 	}
+
+	buf.Clear();
 }
 
 const char *g_szMapFileName;
@@ -1130,8 +1151,17 @@ struct loaded_model_smds_t
 	s_source_t phySMD;
 };
 
+const char *mdlExts[] = {
+	".mdl",
+	".phy",
+	".dx90.vtx",
+	".dx80.vtx",
+	".sw.vtx",
+	".vvd",
+};
+
 inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, 
-	CUtlVector<buildvars_t> *vecBuildVars, const CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
+	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
 {
 	CUtlVector<int> localGroup;
 
@@ -1179,6 +1209,12 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	if (localGroup.Count() < 1)
 		return;
 
+	if (localGroup.Count() == 1)
+	{
+		AddStaticPropToLump(vecBuilds->Element(localGroup[0]));
+		return;
+	}
+
 	Msg("Group:\n");
 
 	s_source_t combinedMesh;
@@ -1187,20 +1223,111 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	s_source_t combinedCollisionMesh;
 	V_memset(&combinedCollisionMesh, 0, sizeof(combinedCollisionMesh));
 
+	char pCrowbarCMD[MAX_PATH];
+	FileSystem_GetExecutableDir(pCrowbarCMD, MAX_PATH);
+	V_snprintf(pCrowbarCMD, sizeof(pCrowbarCMD), "%s\\crowbar.exe", pCrowbarCMD);
+
+	char pGameDirectory[MAX_PATH];
+	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
+	Q_RemoveDotSlashes(pGameDirectory);
+
+	char pDecompCache[MAX_PATH];
+	V_snprintf(pDecompCache, MAX_PATH, "%sdecomp_cache\\", pGameDirectory);
+
 	// TODO: actually combine the local group by writing a qc and building the model
 	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
 	{
 		int buildInd = localGroup[localGroupInd];
+		const StaticPropBuild_t &localBuild = vecBuilds->Element(buildInd);
 
 		int qcInd = dQCs.Find(vecBuilds->Element(buildInd).m_pModelName);
+		if (!dQCs.IsValidIndex(qcInd))
+		{
+			// Decompile the model
+			const char *pLocalMDLName = localBuild.m_pModelName;
+
+			char pMDLFileBase[MAX_PATH];
+			V_FileBase(pLocalMDLName, pMDLFileBase, MAX_PATH);
+			
+			char pTempIntermediateName[MAX_PATH];
+			char pTempMDLPath[MAX_PATH];
+			scriptlib->MakeTemporaryFilename(gamedir, pTempIntermediateName, MAX_PATH);
+			V_ExtractFilePath(pTempIntermediateName, pTempMDLPath, MAX_PATH);
+
+			char pDecompMDLFullPath[MAX_PATH];
+			V_snprintf(pDecompMDLFullPath, MAX_PATH, "%s%s", pTempMDLPath, pMDLFileBase);
+			V_SetExtension(pDecompMDLFullPath, "mdl", MAX_PATH);
+
+
+			for (int extInd = 0; extInd < sizeof(mdlExts) / sizeof(*mdlExts); extInd++)
+			{
+				char pLocalFileName[MAX_PATH];
+				char pDecompFileFullPath[MAX_PATH];
+
+				V_strcpy(pLocalFileName, pLocalMDLName);
+				V_strcpy(pDecompFileFullPath, pDecompMDLFullPath);
+
+				V_SetExtension(pLocalFileName, mdlExts[extInd], MAX_PATH);
+				V_SetExtension(pDecompFileFullPath, mdlExts[extInd], MAX_PATH);
+
+				CUtlBuffer fileBuf;
+				if (g_pFullFileSystem->ReadFile(pLocalFileName, NULL, fileBuf))
+					g_pFullFileSystem->WriteFile(pDecompFileFullPath, NULL, fileBuf);
+
+				fileBuf.Clear();
+			}
+
+			char pMDLFileStem[MAX_PATH];
+			V_StripExtension(pLocalMDLName, pMDLFileStem, MAX_PATH);
+
+			char pDecompCacheForMDL[MAX_PATH];
+			V_snprintf(pDecompCacheForMDL, MAX_PATH, "%s%s\\", pDecompCache, pMDLFileStem);
+			V_FixSlashes(pDecompCacheForMDL);
+
+			char *crowbarArgv[] =
+			{
+				pCrowbarCMD,
+				"decompile",
+				"-i",
+				pDecompMDLFullPath,
+				"-o",
+				pDecompCacheForMDL,
+				NULL
+			};
+
+			int retval = _spawnv(_P_WAIT, pCrowbarCMD, crowbarArgv);
+
+			if (retval != 0) // error
+			{
+				// Console Spam :))
+				Warning("Unable to decompile %s.\n", localBuild.m_pModelName);
+				continue;
+			}
+
+			char pDecompiledQCPath[MAX_PATH];
+			V_snprintf(pDecompiledQCPath, MAX_PATH, "%s%s.qc", pMDLFileBase);
+
+			bool retVal = false;
+			QCFile_t *newQC = new QCFile_t(pDecompCacheForMDL, pDecompiledQCPath, &retVal);
+
+			if (retVal)
+				qcInd = dQCs.Insert(newQC->m_pPath, newQC);
+			else
+			{
+				delete newQC;
+				Warning("Unable to load decompiled qc for %s.\n", localBuild.m_pModelName);
+				continue;
+			}
+		}
+
 		QCFile_t *correspondingQC = dQCs[qcInd];
 
 		// Add to mesh
 			
-		int smdInd = dLoadedSMDs.Find(vecBuilds->Element(buildInd).m_pModelName);
+		int smdInd = dLoadedSMDs.Find(localBuild.m_pModelName);
 		if (!dLoadedSMDs.IsValidIndex(smdInd))
 		{
-			smdInd = dLoadedSMDs.Insert(vecBuilds->Element(buildInd).m_pModelName);
+			smdInd = dLoadedSMDs.Insert(localBuild.m_pModelName);
 
 			loaded_model_smds_t &loadingSMD = dLoadedSMDs.Element(smdInd);
 
@@ -1209,23 +1336,31 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 			// Load the mesh into the addition meshes
 			V_strcpy(loadingSMD.refSMD.filename, "../");
-			V_strcpy(loadingSMD.phySMD.filename, "../");
-
 			V_strcpy(loadingSMD.refSMD.filename + 3, correspondingQC->m_pRefSMD);
-			V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
-
+			
 			Load_SMD(&loadingSMD.refSMD);
-			Load_SMD(&loadingSMD.phySMD);
+
+			if (correspondingQC->m_pPhySMD)
+			{
+				V_strcpy(loadingSMD.phySMD.filename, "../");
+				V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
+
+				Load_SMD(&loadingSMD.phySMD);
+			}
 		}
 
 		s_source_t &additionMesh = dLoadedSMDs.Element(smdInd).refSMD;
-		s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
 
-		Vector offsetOrigin = vecBuilds->Element(buildInd).m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
+		Vector offsetOrigin = localBuild.m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
 
-		CombineMeshes(combinedMesh, additionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flRefScale);
-		CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, vecBuilds->Element(buildInd).m_Angles, correspondingQC->m_flPhyScale);
+		CombineMeshes(combinedMesh, additionMesh, offsetOrigin, localBuild.m_Angles, correspondingQC->m_flRefScale);
 
+		if (dLoadedSMDs.Element(smdInd).phySMD.numvertices != 0)
+		{
+			s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
+
+			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, localBuild.m_Angles, correspondingQC->m_flPhyScale);
+		}
 
 		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
 		// This updates the s_source thing 
@@ -1233,9 +1368,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		// Then, after all of this, compile into a mdl and add to map
 		vecBuildAccountedFor->Element(buildInd) = true;
 
-		const Vector &buildOrigin = vecBuilds->Element(buildInd).m_Origin;
+		const Vector &buildOrigin = localBuild.m_Origin;
 
-		Msg("\t%s : %f %f %f : %d\n", vecBuilds->Element(buildInd).m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
+		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
 	char pTempFilePath[MAX_PATH];
@@ -1251,7 +1386,11 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	V_SetExtension(pTempAnimFilePath, "smd", MAX_PATH);
 
 	Save_SMD_Static(pTempFilePath, &combinedMesh);
-	Save_SMD_Static(pTempCollisionFilePath, &combinedCollisionMesh);
+
+	if (combinedCollisionMesh.numvertices != 0)
+	{
+		Save_SMD_Static(pTempCollisionFilePath, &combinedCollisionMesh);
+	}
 
 	SaveSampleAnimFile(pTempAnimFilePath);
 
@@ -1272,15 +1411,11 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	V_SetExtension(pFullModelPath, "mdl", MAX_PATH);
 
 	SaveQCFile(pQCFilePath, pFullModelPath, pTempFilePath,
-		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents);
+		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents, combinedCollisionMesh.numvertices != 0);
 	//
 	char pStudioMDLCmd[MAX_PATH];
 	FileSystem_GetExecutableDir(pStudioMDLCmd, MAX_PATH);
 	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pStudioMDLCmd);
-
-	char pGameDirectory[MAX_PATH];
-	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
-	Q_RemoveDotSlashes(pGameDirectory);
 
 	// TODO: Nothing happens
 	char *argv[] =
@@ -1298,7 +1433,7 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup[0]);
 	newBuild.m_pModelName = V_strdup(pModelBuildName);
-	newBuild.m_Angles = QAngle(0, 0, 0); // TODO: Change base model (maybe just by combining with nothing?)
+	newBuild.m_Angles = QAngle(0, -90, 0); // TODO: Change base model (maybe just by combining with nothing?)
 
 	AddStaticPropToLump(newBuild);
 }
@@ -1461,6 +1596,9 @@ void EmitStaticProps()
 		CUtlHashDict<QCFile_t *> dQCs;
 		dQCs.Purge();
 		SearchQCs(dQCs);
+
+		// Search decompiled models
+		SearchQCs(dQCs, "decomp_cache/");
 
 		// Find prop materials by decompiling or finding qc
 

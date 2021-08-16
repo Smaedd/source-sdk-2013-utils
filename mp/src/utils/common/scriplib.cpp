@@ -702,6 +702,7 @@ skipspace:
 	*token_p = 0;
 
 	// check for other commands
+#ifndef VBSP_DLL // LOL!!! HA HA!!!
 	if ( !stricmp( token, "$include" ) )
 	{
 		GetToken( false );
@@ -739,7 +740,9 @@ skipspace:
 
 		return GetToken( crossline );
 	}
-	else if (!stricmp (token, "$definemacro"))
+	else 
+#endif
+	if (!stricmp (token, "$definemacro"))
 	{
 		GetToken (false);
 		DefineMacro(token);
@@ -864,12 +867,14 @@ skipspace:
 
 	*token_p = 0;
 
+#ifndef VBSP_DLL // LOL!!!
 	if (!stricmp (token, "$include"))
 	{
 		GetToken (false);
 		AddScriptToStack (token);
 		return GetToken (crossline);
 	}
+#endif
 
 	return true;
 }
