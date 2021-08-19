@@ -1116,13 +1116,25 @@ void BuildIndividualMeshes( s_source_t *psource )
 
 	// allocate memory
 	psource->numvertices = numvlist;
-	psource->localBoneweight = (s_boneweight_t *)kalloc( psource->numvertices, sizeof( s_boneweight_t ) );
+#ifdef VBSP_DLL
+	// Ensure allocations use malloc rather than new to match StaticProp.cpp realloc func
+
+	psource->localBoneweight = (s_boneweight_t *)kalloc(psource->numvertices, sizeof(s_boneweight_t));
 	psource->globalBoneweight = NULL;
-	psource->vertexInfo = (s_vertexinfo_t *)kalloc( psource->numvertices, sizeof( s_vertexinfo_t ) );
+	psource->vertexInfo = (s_vertexinfo_t *)kalloc(psource->numvertices, sizeof(s_vertexinfo_t));
+	psource->vertex = (Vector *)kalloc(psource->numvertices, sizeof(Vector));
+	psource->normal = (Vector *)kalloc(psource->numvertices, sizeof(Vector));
+	psource->tangentS = (Vector4D *)kalloc(psource->numvertices, sizeof(Vector4D));
+	psource->texcoord = (Vector2D *)kalloc(psource->numvertices, sizeof(Vector2D));
+#else
+	psource->localBoneweight = (s_boneweight_t *)kalloc(psource->numvertices, sizeof(s_boneweight_t));
+	psource->globalBoneweight = NULL;
+	psource->vertexInfo = (s_vertexinfo_t *)kalloc(psource->numvertices, sizeof(s_vertexinfo_t));
 	psource->vertex = new Vector[psource->numvertices];
 	psource->normal = new Vector[psource->numvertices];
 	psource->tangentS = new Vector4D[psource->numvertices];
-	psource->texcoord = (Vector2D *)kalloc( psource->numvertices, sizeof( Vector2D ) );
+	psource->texcoord = (Vector2D *)kalloc(psource->numvertices, sizeof(Vector2D));
+#endif // VBSP_DLL
 
 	// create arrays of unique vertexes, normals, texcoords.
 	for (i = 0; i < psource->numvertices; i++)

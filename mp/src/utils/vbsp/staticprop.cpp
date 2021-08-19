@@ -1160,6 +1160,161 @@ const char *mdlExts[] = {
 	".vvd",
 };
 
+int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache, const char *pCrowbarCMD, CUtlHashDict<QCFile_t *> &dQCs)
+{
+	int qcInd = dQCs.InvalidHandle();
+
+	// Decompile the model
+	const char *pLocalMDLName = localBuild.m_pModelName;
+
+	char pMDLFileBase[MAX_PATH];
+	V_FileBase(pLocalMDLName, pMDLFileBase, MAX_PATH);
+
+	char pTempIntermediateName[MAX_PATH];
+	char pTempMDLPath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempIntermediateName, MAX_PATH);
+	V_ExtractFilePath(pTempIntermediateName, pTempMDLPath, MAX_PATH);
+
+	char pDecompMDLFullPath[MAX_PATH];
+	V_snprintf(pDecompMDLFullPath, MAX_PATH, "%s%s", pTempMDLPath, pMDLFileBase);
+	V_SetExtension(pDecompMDLFullPath, "mdl", MAX_PATH);
+
+
+	for (int extInd = 0; extInd < sizeof(mdlExts) / sizeof(*mdlExts); extInd++)
+	{
+		char pLocalFileName[MAX_PATH];
+		char pDecompFileFullPath[MAX_PATH];
+
+		V_strcpy(pLocalFileName, pLocalMDLName);
+		V_strcpy(pDecompFileFullPath, pDecompMDLFullPath);
+
+		V_SetExtension(pLocalFileName, mdlExts[extInd], MAX_PATH);
+		V_SetExtension(pDecompFileFullPath, mdlExts[extInd], MAX_PATH);
+
+		CUtlBuffer fileBuf;
+		if (g_pFullFileSystem->ReadFile(pLocalFileName, NULL, fileBuf))
+			g_pFullFileSystem->WriteFile(pDecompFileFullPath, NULL, fileBuf);
+
+		fileBuf.Clear();
+	}
+
+	char pMDLFileStem[MAX_PATH];
+	V_StripExtension(pLocalMDLName, pMDLFileStem, MAX_PATH);
+
+	char pDecompCacheForMDL[MAX_PATH];
+	char pDecompCacheForMDLWithQuotes[MAX_PATH];
+	V_snprintf(pDecompCacheForMDL, MAX_PATH, "%s%s\\", pDecompCache, pMDLFileStem);
+	V_FixSlashes(pDecompCacheForMDL);
+	V_snprintf(pDecompCacheForMDLWithQuotes, MAX_PATH, "\"%s\"", pDecompCacheForMDL);
+
+	// Quotes needed for arg parser for some reason
+	char pDecompMDLFullPathWithQuotes[MAX_PATH];
+	V_snprintf(pDecompMDLFullPathWithQuotes, MAX_PATH, "\"%s\"", pDecompMDLFullPath);
+
+	const char *crowbarArgv[] =
+	{
+		"NOTHING", // pad it out with random text so spaces don't matter
+		"decompile",
+		"-i",
+		pDecompMDLFullPathWithQuotes,
+		"-o",
+		pDecompCacheForMDLWithQuotes,
+		NULL
+	};
+
+	if (_spawnv(_P_WAIT, pCrowbarCMD, crowbarArgv) != 0) // error
+	{
+		// Console Spam :))
+		Warning("Unable to decompile %s.\n", localBuild.m_pModelName);
+		return dQCs.InvalidHandle();
+	}
+
+	char pDecompiledQCPath[MAX_PATH];
+	V_snprintf(pDecompiledQCPath, MAX_PATH, "%s%s.qc", pDecompCacheForMDL, pMDLFileBase);
+
+	bool retVal = false;
+	QCFile_t *newQC = new QCFile_t(pDecompCacheForMDL, pDecompiledQCPath, &retVal);
+
+	if (retVal)
+		qcInd = dQCs.Insert(newQC->m_pPath, newQC);
+	else
+	{
+		delete newQC;
+		Warning("Unable to load decompiled qc for %s.\n", localBuild.m_pModelName);
+		return dQCs.InvalidHandle();
+	}
+
+	return qcInd;
+}
+
+
+inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, CUtlVector<buildvars_t> *vecBuildVars, const CUtlVector<StaticPropBuild_t> *vecBuilds, const char *pGameDirectory, const CUtlVector<int> *localGroup)
+{
+	char pTempFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
+	V_SetExtension(pTempFilePath, "smd", MAX_PATH);
+
+	char pTempCollisionFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempCollisionFilePath, MAX_PATH);
+	V_SetExtension(pTempCollisionFilePath, "smd", MAX_PATH);
+
+	char pTempAnimFilePath[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, pTempAnimFilePath, MAX_PATH);
+	V_SetExtension(pTempAnimFilePath, "smd", MAX_PATH);
+
+	Save_SMD_Static(pTempFilePath, &combinedMesh);
+
+	if (combinedCollisionMesh.numvertices != 0)
+	{
+		Save_SMD_Static(pTempCollisionFilePath, &combinedCollisionMesh);
+	}
+
+	SaveSampleAnimFile(pTempAnimFilePath);
+
+	char pQCFilePath[MAX_PATH];
+	V_strcpy(pQCFilePath, pTempFilePath);
+	V_SetExtension(pQCFilePath, "qc", MAX_PATH);
+
+	buildvars_t &buildVars = vecBuildVars->Element(localGroup->Element(0));
+
+	char pModelName[MAX_PATH];
+	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
+
+	char pMapBase[MAX_PATH];
+	V_FileBase(g_szMapFileName, pMapBase, MAX_PATH);
+
+	char pFullModelPath[MAX_PATH];
+	V_snprintf(pFullModelPath, MAX_PATH, "maps\\%s\\%s", pMapBase, pModelName);
+	V_SetExtension(pFullModelPath, "mdl", MAX_PATH);
+
+	SaveQCFile(pQCFilePath, pFullModelPath, pTempFilePath,
+		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents, combinedCollisionMesh.numvertices != 0);
+	//
+	char pStudioMDLCmd[MAX_PATH];
+	FileSystem_GetExecutableDir(pStudioMDLCmd, MAX_PATH);
+	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pStudioMDLCmd);
+
+	// TODO: Nothing happens
+	const char *argv[] =
+	{
+		"-game",
+		pGameDirectory,
+		pQCFilePath,
+		NULL
+	};
+
+	_spawnv(_P_WAIT, pStudioMDLCmd, argv);
+
+	char pModelBuildName[MAX_PATH];
+	V_snprintf(pModelBuildName, sizeof(pModelBuildName), "models\\%s", pFullModelPath);
+
+	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup->Element(0));
+	newBuild.m_pModelName = V_strdup(pModelBuildName);
+	newBuild.m_Angles = QAngle(0, -90, 0); // TODO: Change base model (maybe just by combining with nothing?)
+
+	AddStaticPropToLump(newBuild);
+}
+
 inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, 
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
 {
@@ -1223,9 +1378,13 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 	s_source_t combinedCollisionMesh;
 	V_memset(&combinedCollisionMesh, 0, sizeof(combinedCollisionMesh));
 
+	
 	char pCrowbarCMD[MAX_PATH];
-	FileSystem_GetExecutableDir(pCrowbarCMD, MAX_PATH);
-	V_snprintf(pCrowbarCMD, sizeof(pCrowbarCMD), "%s\\crowbar.exe", pCrowbarCMD);
+	{
+		char pCrowbarDir[MAX_PATH];
+		FileSystem_GetExecutableDir(pCrowbarDir, MAX_PATH);
+		V_snprintf(pCrowbarCMD, sizeof(pCrowbarCMD), "%s\\crowbar.exe", pCrowbarDir);
+	}
 
 	char pGameDirectory[MAX_PATH];
 	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
@@ -1243,79 +1402,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		int qcInd = dQCs.Find(vecBuilds->Element(buildInd).m_pModelName);
 		if (!dQCs.IsValidIndex(qcInd))
 		{
-			// Decompile the model
-			const char *pLocalMDLName = localBuild.m_pModelName;
+			qcInd = DecompileModel(localBuild, pDecompCache, pCrowbarCMD, dQCs);
 
-			char pMDLFileBase[MAX_PATH];
-			V_FileBase(pLocalMDLName, pMDLFileBase, MAX_PATH);
-			
-			char pTempIntermediateName[MAX_PATH];
-			char pTempMDLPath[MAX_PATH];
-			scriptlib->MakeTemporaryFilename(gamedir, pTempIntermediateName, MAX_PATH);
-			V_ExtractFilePath(pTempIntermediateName, pTempMDLPath, MAX_PATH);
-
-			char pDecompMDLFullPath[MAX_PATH];
-			V_snprintf(pDecompMDLFullPath, MAX_PATH, "%s%s", pTempMDLPath, pMDLFileBase);
-			V_SetExtension(pDecompMDLFullPath, "mdl", MAX_PATH);
-
-
-			for (int extInd = 0; extInd < sizeof(mdlExts) / sizeof(*mdlExts); extInd++)
-			{
-				char pLocalFileName[MAX_PATH];
-				char pDecompFileFullPath[MAX_PATH];
-
-				V_strcpy(pLocalFileName, pLocalMDLName);
-				V_strcpy(pDecompFileFullPath, pDecompMDLFullPath);
-
-				V_SetExtension(pLocalFileName, mdlExts[extInd], MAX_PATH);
-				V_SetExtension(pDecompFileFullPath, mdlExts[extInd], MAX_PATH);
-
-				CUtlBuffer fileBuf;
-				if (g_pFullFileSystem->ReadFile(pLocalFileName, NULL, fileBuf))
-					g_pFullFileSystem->WriteFile(pDecompFileFullPath, NULL, fileBuf);
-
-				fileBuf.Clear();
-			}
-
-			char pMDLFileStem[MAX_PATH];
-			V_StripExtension(pLocalMDLName, pMDLFileStem, MAX_PATH);
-
-			char pDecompCacheForMDL[MAX_PATH];
-			V_snprintf(pDecompCacheForMDL, MAX_PATH, "%s%s\\", pDecompCache, pMDLFileStem);
-			V_FixSlashes(pDecompCacheForMDL);
-
-			char *crowbarArgv[] =
-			{
-				pCrowbarCMD,
-				"decompile",
-				"-i",
-				pDecompMDLFullPath,
-				"-o",
-				pDecompCacheForMDL,
-				NULL
-			};
-
-			int retval = _spawnv(_P_WAIT, pCrowbarCMD, crowbarArgv);
-
-			if (retval != 0) // error
-			{
-				// Console Spam :))
-				Warning("Unable to decompile %s.\n", localBuild.m_pModelName);
-				continue;
-			}
-
-			char pDecompiledQCPath[MAX_PATH];
-			V_snprintf(pDecompiledQCPath, MAX_PATH, "%s%s.qc", pMDLFileBase);
-
-			bool retVal = false;
-			QCFile_t *newQC = new QCFile_t(pDecompCacheForMDL, pDecompiledQCPath, &retVal);
-
-			if (retVal)
-				qcInd = dQCs.Insert(newQC->m_pPath, newQC);
-			else
-			{
-				delete newQC;
-				Warning("Unable to load decompiled qc for %s.\n", localBuild.m_pModelName);
+			if (!dQCs.IsValidIndex(qcInd)) {
 				continue;
 			}
 		}
@@ -1373,69 +1462,7 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
-	char pTempFilePath[MAX_PATH];
-	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
-	V_SetExtension(pTempFilePath, "smd", MAX_PATH);
-
-	char pTempCollisionFilePath[MAX_PATH];
-	scriptlib->MakeTemporaryFilename(gamedir, pTempCollisionFilePath, MAX_PATH);
-	V_SetExtension(pTempCollisionFilePath, "smd", MAX_PATH);
-
-	char pTempAnimFilePath[MAX_PATH];
-	scriptlib->MakeTemporaryFilename(gamedir, pTempAnimFilePath, MAX_PATH);
-	V_SetExtension(pTempAnimFilePath, "smd", MAX_PATH);
-
-	Save_SMD_Static(pTempFilePath, &combinedMesh);
-
-	if (combinedCollisionMesh.numvertices != 0)
-	{
-		Save_SMD_Static(pTempCollisionFilePath, &combinedCollisionMesh);
-	}
-
-	SaveSampleAnimFile(pTempAnimFilePath);
-
-	char pQCFilePath[MAX_PATH];
-	V_strcpy(pQCFilePath, pTempFilePath);
-	V_SetExtension(pQCFilePath, "qc", MAX_PATH);
-
-	buildvars_t &buildVars = vecBuildVars->Element(localGroup[0]);
-
-	char pModelName[MAX_PATH];
-	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
-	
-	char pMapBase[MAX_PATH];
-	V_FileBase(g_szMapFileName, pMapBase, MAX_PATH);
-
-	char pFullModelPath[MAX_PATH];
-	V_snprintf(pFullModelPath, MAX_PATH, "maps\\%s\\%s", pMapBase, pModelName);
-	V_SetExtension(pFullModelPath, "mdl", MAX_PATH);
-
-	SaveQCFile(pQCFilePath, pFullModelPath, pTempFilePath,
-		pTempCollisionFilePath, pTempAnimFilePath, buildVars.surfaceProp, buildVars.cdMats, buildVars.contents, combinedCollisionMesh.numvertices != 0);
-	//
-	char pStudioMDLCmd[MAX_PATH];
-	FileSystem_GetExecutableDir(pStudioMDLCmd, MAX_PATH);
-	V_snprintf(pStudioMDLCmd, sizeof(pStudioMDLCmd), "%s\\studiomdl.exe", pStudioMDLCmd);
-
-	// TODO: Nothing happens
-	char *argv[] =
-	{
-		"-game",
-		pGameDirectory,
-		pQCFilePath,
-		NULL
-	};
-
-	_spawnv(_P_WAIT, pStudioMDLCmd, argv);
-
-	char pModelBuildName[MAX_PATH];
-	V_snprintf(pModelBuildName, sizeof(pModelBuildName), "models\\%s", pFullModelPath);
-
-	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup[0]);
-	newBuild.m_pModelName = V_strdup(pModelBuildName);
-	newBuild.m_Angles = QAngle(0, -90, 0); // TODO: Change base model (maybe just by combining with nothing?)
-
-	AddStaticPropToLump(newBuild);
+	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars, vecBuilds, pGameDirectory, &localGroup);
 }
 
 #endif // STATIC_PROP_COMBINE_ENABLED
