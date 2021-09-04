@@ -63,6 +63,9 @@ struct StaticPropBuild_t
 	unsigned short	m_nMaxDXLevel;
 	int		m_LightmapResolutionX;
 	int		m_LightmapResolutionY;
+#ifdef STATIC_PROP_COMBINE_ENABLED
+	float	m_Scale;
+#endif
 };
  
 
@@ -695,7 +698,6 @@ static bool ComputeLightingOrigin( StaticPropBuild_t const& build, Vector& light
 	return false;
 }
 
-
 //-----------------------------------------------------------------------------
 // Places Static Props in the level
 //-----------------------------------------------------------------------------
@@ -831,10 +833,6 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir = "models
 	}
 }
 
-
-
-#define MAX_GROUPING_KEY 256
-
 #define MAX_SURFACEPROP 32
 
 struct buildvars_t {
@@ -842,6 +840,28 @@ struct buildvars_t {
 	char surfaceProp[MAX_SURFACEPROP];
 	char cdMats[MAX_PATH];
 };
+
+struct loaded_model_smds_t
+{
+	s_source_t refSMD;
+	s_source_t phySMD;
+};
+
+void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs);
+
+static void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
+{
+	if (fabs(build.m_Scale - 1.0f) > 0.0001f)
+	{
+		ScalePropAndAddToLump(build, buildVars, dQCs, dLoadedSMDs);
+
+		return;
+	}
+
+	AddStaticPropToLump(build);
+}
+
+#define MAX_GROUPING_KEY 256
 
 inline const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVector<buildvars_t> *vecBuildVars)
 {
@@ -1149,12 +1169,6 @@ inline void SaveSampleAnimFile(const char *filename) {
 
 const char *g_szMapFileName;
 
-struct loaded_model_smds_t 
-{
-	s_source_t refSMD;
-	s_source_t phySMD;
-};
-
 const char *mdlExts[] = {
 	".mdl",
 	".phy",
@@ -1252,7 +1266,7 @@ int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache
 }
 
 
-inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const float avgYaw)
+inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles)
 {
 	char pTempFilePath[MAX_PATH];
 	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
@@ -1313,7 +1327,7 @@ inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCo
 	StaticPropBuild_t newBuild = build;
 	newBuild.m_pModelName = V_strdup(pModelBuildName);
 	newBuild.m_Origin = avgPos;
-	newBuild.m_Angles = QAngle(0, avgYaw - 90, 0);
+	newBuild.m_Angles = angles;
 
 	AddStaticPropToLump(newBuild);
 }
@@ -1340,7 +1354,7 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		CPhysCollide* pConvexHull = GetCollisionModel(propBuild.m_pModelName);
 		if (!pConvexHull)
 		{
-			AddStaticPropToLump(propBuild);
+			AddStaticPropToLumpWithScaling(propBuild, vecBuildVars->Element(buildInd), dQCs, dLoadedSMDs);
 			vecBuildAccountedFor->Element(buildInd) = true;
 
 			continue;
@@ -1378,7 +1392,8 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	if (localGroup.Count() == 1)
 	{
-		AddStaticPropToLump(vecBuilds->Element(localGroup[0]));
+		AddStaticPropToLumpWithScaling(vecBuilds->Element(localGroup[0]), vecBuildVars->Element(localGroup[0]), dQCs, dLoadedSMDs);
+		vecBuildAccountedFor->Element(localGroup[0]) = true;
 		return;
 	}
 
@@ -1461,7 +1476,7 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 			}
 		}
 
-		s_source_t &additionMesh = dLoadedSMDs.Element(smdInd).refSMD;
+		const s_source_t &additionMesh = dLoadedSMDs.Element(smdInd).refSMD;
 
 		Vector additionOrigin;
 		VectorRotate(localBuild.m_Origin - avgPos, yawRot, additionOrigin);
@@ -1483,13 +1498,13 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 			
 		}
 
-		CombineMeshes(combinedMesh, additionMesh, additionOrigin, additionAngle, correspondingQC->m_flRefScale);
+		CombineMeshes(combinedMesh, additionMesh, additionOrigin, additionAngle, correspondingQC->m_flRefScale * localBuild.m_Scale);
 
 		if (dLoadedSMDs.Element(smdInd).phySMD.numvertices != 0)
 		{
-			s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
+			const s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
 
-			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, additionOrigin, additionAngle, correspondingQC->m_flPhyScale);
+			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, additionOrigin, additionAngle, correspondingQC->m_flPhyScale * localBuild.m_Scale);
 		}
 
 		float buildScale = 1;
@@ -1514,7 +1529,80 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	CRC32_Final(&propPosCRC);
 
-	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, avgYaw);
+	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0));
+}
+
+inline void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
+{
+	char pCrowbarCMD[MAX_PATH];
+	{
+		char pCrowbarDir[MAX_PATH];
+		FileSystem_GetExecutableDir(pCrowbarDir, MAX_PATH);
+		V_snprintf(pCrowbarCMD, sizeof(pCrowbarCMD), "%s\\crowbar.exe", pCrowbarDir);
+	}
+
+	char pGameDirectory[MAX_PATH];
+	GetModSubdirectory("", pGameDirectory, sizeof(pGameDirectory));
+	Q_RemoveDotSlashes(pGameDirectory);
+
+	char pDecompCache[MAX_PATH];
+	V_snprintf(pDecompCache, MAX_PATH, "%sdecomp_cache\\", pGameDirectory);
+
+	int qcInd = dQCs.Find(propBuild.m_pModelName);
+	if (!dQCs.IsValidIndex(qcInd))
+	{
+		qcInd = DecompileModel(propBuild, pDecompCache, pCrowbarCMD, dQCs);
+
+		if (!dQCs.IsValidIndex(qcInd)) {
+			return;
+		}
+	}
+
+	QCFile_t *correspondingQC = dQCs[qcInd];
+
+	int smdInd = dLoadedSMDs.Find(propBuild.m_pModelName);
+	if (!dLoadedSMDs.IsValidIndex(smdInd))
+	{
+		smdInd = dLoadedSMDs.Insert(propBuild.m_pModelName);
+
+		loaded_model_smds_t &loadingSMD = dLoadedSMDs.Element(smdInd);
+
+		V_memset(&loadingSMD.refSMD, 0, sizeof(s_source_t));
+		V_memset(&loadingSMD.phySMD, 0, sizeof(s_source_t));
+
+		// Load the mesh into the addition meshes
+		V_strcpy(loadingSMD.refSMD.filename, "../");
+		V_strcpy(loadingSMD.refSMD.filename + 3, correspondingQC->m_pRefSMD);
+
+		Load_SMD(&loadingSMD.refSMD);
+
+		if (correspondingQC->m_pPhySMD)
+		{
+			V_strcpy(loadingSMD.phySMD.filename, "../");
+			V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
+
+			Load_SMD(&loadingSMD.phySMD);
+		}
+	}
+
+	s_source_t scaledMesh;
+	V_memset(&scaledMesh, 0, sizeof(scaledMesh));
+
+	s_source_t scaledCollisionMesh;
+	V_memset(&scaledCollisionMesh, 0, sizeof(scaledCollisionMesh));
+
+	const s_source_t &loadedMesh = dLoadedSMDs.Element(smdInd).refSMD;
+	CombineMeshes(scaledMesh, loadedMesh, Vector(0, 0, 0), QAngle(0, -90, 0), correspondingQC->m_flRefScale * propBuild.m_Scale);
+
+	if (dLoadedSMDs.Element(smdInd).phySMD.numvertices != 0)
+	{
+		const s_source_t &loadedCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
+
+		CombineMeshes(scaledCollisionMesh, loadedCollisionMesh, Vector(0, 0, 0), QAngle(0, -90, 0), correspondingQC->m_flPhyScale * propBuild.m_Scale);
+	}
+
+	CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles);
+
 }
 
 #endif // STATIC_PROP_COMBINE_ENABLED
@@ -1572,7 +1660,7 @@ void EmitStaticProps()
 			vecPropCombineVolumes.AddToTail(i);
 		} else
 #endif // STATIC_PROP_COMBINE_ENABLED
-		if (!strcmp(pEntity, "static_prop") || !strcmp(pEntity, "prop_static"))
+		if (!strcmp(pEntity, "static_prop") || !strcmp(pEntity, "prop_static") || !strcmp(pEntity, "prop_static_scalable"))
 		{
 			StaticPropBuild_t build;
 
@@ -1644,6 +1732,13 @@ void EmitStaticProps()
 			build.m_nMaxDXLevel = (unsigned short)IntForKey( &entities[i], "maxdxlevel" );
 
 #ifdef STATIC_PROP_COMBINE_ENABLED
+			build.m_Scale = FloatForKey(&entities[i], "modelscale");
+
+			if (build.m_Scale < 0.00001f) // No scale or invalid scale;
+			{
+				build.m_Scale = 1.0f;
+			}
+
 			vecBuilds.AddToTail(build);
 
 			vecBuildAccountedFor.AddToTail(false);
@@ -1660,6 +1755,19 @@ void EmitStaticProps()
 
 #ifdef STATIC_PROP_COMBINE_ENABLED
 
+	// Load all QCs
+	CUtlHashDict<QCFile_t *> dQCs;
+	dQCs.Purge();
+	SearchQCs(dQCs);
+
+	// Search decompiled models
+	SearchQCs(dQCs, "decomp_cache/");
+
+	CUtlVector<buildvars_t> vecBuildVars;
+
+	CUtlHashDict<loaded_model_smds_t> dLoadedSMDs;
+	dLoadedSMDs.Purge();
+
 	if (vecPropCombineVolumes.Count() > 0)
 	{
 		Msg("\nCombining static props to reduce drawcalls...\n\n");
@@ -1671,14 +1779,6 @@ void EmitStaticProps()
 
 		// Combining algorithm:
 
-		// Load all QCs
-		CUtlHashDict<QCFile_t *> dQCs;
-		dQCs.Purge();
-		SearchQCs(dQCs);
-
-		// Search decompiled models
-		SearchQCs(dQCs, "decomp_cache/");
-
 		// Find prop materials by decompiling or finding qc
 
 
@@ -1687,8 +1787,6 @@ void EmitStaticProps()
 		// Pair key to group, by index in vecBuilds
 		CUtlHashDict<CUtlVector<int> *> dPropGroups;
 		dPropGroups.Purge();
-
-		CUtlVector<buildvars_t> vecBuildVars;
 		
 		// Create grouping key for each
 		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
@@ -1703,7 +1801,7 @@ void EmitStaticProps()
 			if (!groupingKey)
 			{
 				// Add prop as it was not grouped
-				AddStaticPropToLump(vecBuilds[i]);
+				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
 				vecBuildAccountedFor[i] = true;
 
 				continue;
@@ -1744,9 +1842,6 @@ void EmitStaticProps()
 		flip_triangles = 0;
 		normal_blend = 2.0f; // Never blend
 
-		CUtlHashDict<loaded_model_smds_t> dLoadedSMDs;
-		dLoadedSMDs.Purge();
-
 
 		//, then split these groups by the propcombine volume
 		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
@@ -1778,7 +1873,7 @@ void EmitStaticProps()
 		{
 			if (!vecBuildAccountedFor[i])
 			{
-				AddStaticPropToLump(vecBuilds[i]);
+				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
 			}
 		}
 
@@ -1795,7 +1890,8 @@ void EmitStaticProps()
 	{
 		for (i = 0; i < vecBuilds.Count(); ++i) 
 		{
-			AddStaticPropToLump(vecBuilds[i]);
+			GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
+			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
 		}
 	}
 
