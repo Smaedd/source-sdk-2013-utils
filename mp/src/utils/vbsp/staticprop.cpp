@@ -1037,18 +1037,11 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 	if (addition.numvertices == 0) // Nothing to add
 		return;
 
-	QAngle correctionAngle = QAngle(0, 0, 0);
-	Vector correctedOffset;
-	VectorRotate(additionOrigin, correctionAngle, correctedOffset);
-
-	QAngle correctedAngle = QAngle(additionAngles.x, additionAngles.y, additionAngles.z);
-
 	matrix3x4_t rotMatrix;
-	AngleMatrix(correctedAngle, rotMatrix);
+	AngleMatrix(QAngle(0, 90, 0), rotMatrix);
 
-	matrix3x4_t transformMatrix = rotMatrix;
-	MatrixScaleBy(scale, transformMatrix);
-	MatrixSetColumn(correctedOffset, 3, transformMatrix);
+	matrix3x4_t additionRotMatrix;
+	AngleMatrix(additionAngles, additionRotMatrix);
 
 	int oldNumVertices = combined.numvertices;
 	int oldNumFaces = combined.numfaces;
@@ -1070,8 +1063,19 @@ inline void CombineMeshes(s_source_t &combined, const s_source_t &addition, cons
 
 			combined.texcoord[combinedVertNum]			= addition.texcoord[meshVertNum];
 
-			VectorTransform(addition.vertex[meshVertNum], transformMatrix, combined.vertex[combinedVertNum]);
-			VectorTransform(addition.normal[meshVertNum], rotMatrix, combined.normal[combinedVertNum]);
+			Vector yawRotatedVertex, rotatedVertex, yawRotatedNormal, rotatedNormal;
+
+			VectorTransform(addition.vertex[meshVertNum], rotMatrix, yawRotatedVertex);
+			VectorTransform(addition.normal[meshVertNum], rotMatrix, yawRotatedNormal);
+
+			yawRotatedVertex *= scale;
+			VectorTransform(yawRotatedNormal, additionRotMatrix, rotatedNormal);
+			VectorTransform(yawRotatedVertex, additionRotMatrix, rotatedVertex);
+
+			rotatedVertex += additionOrigin;
+
+			combined.vertex[combinedVertNum] = rotatedVertex;
+			combined.normal[combinedVertNum] = rotatedNormal;
 			
 			addedFace.verts[vert] = combinedVertNum;
 		}
@@ -1248,7 +1252,7 @@ int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache
 }
 
 
-inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, CUtlVector<buildvars_t> *vecBuildVars, const CUtlVector<StaticPropBuild_t> *vecBuilds, const char *pGameDirectory, const CUtlVector<int> *localGroup)
+inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const float avgYaw)
 {
 	char pTempFilePath[MAX_PATH];
 	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
@@ -1274,8 +1278,6 @@ inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCo
 	char pQCFilePath[MAX_PATH];
 	V_strcpy(pQCFilePath, pTempFilePath);
 	V_SetExtension(pQCFilePath, "qc", MAX_PATH);
-
-	buildvars_t &buildVars = vecBuildVars->Element(localGroup->Element(0));
 
 	char pModelName[MAX_PATH];
 	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
@@ -1308,17 +1310,23 @@ inline void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCo
 	char pModelBuildName[MAX_PATH];
 	V_snprintf(pModelBuildName, sizeof(pModelBuildName), "models\\%s", pFullModelPath);
 
-	StaticPropBuild_t newBuild = vecBuilds->Element(localGroup->Element(0));
+	StaticPropBuild_t newBuild = build;
 	newBuild.m_pModelName = V_strdup(pModelBuildName);
-	newBuild.m_Angles = QAngle(0, -90, 0); // TODO: Change base model (maybe just by combining with nothing?)
+	newBuild.m_Origin = avgPos;
+	newBuild.m_Angles = QAngle(0, avgYaw - 90, 0);
 
 	AddStaticPropToLump(newBuild);
 }
+
+#define PROPPOS_ROUND_NUM 1000.f
 
 inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor, 
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
 {
 	CUtlVector<int> localGroup;
+
+	Vector avgPos = Vector(0, 0, 0);
+	float avgYaw = 0.f;
 
 	for (int propInd = 0; propInd < keyGroupedProps->Count(); ++propInd)
 	{
@@ -1353,6 +1361,10 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 				{
 					// Locally group the prop
 					localGroup.AddToTail(buildInd);
+
+					avgPos += propBuild.m_Origin;
+					avgYaw += propBuild.m_Angles[YAW];
+
 					vecBuildAccountedFor->Element(buildInd) = true;
 
 					FreeBrush(pIntersect);
@@ -1369,6 +1381,14 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		AddStaticPropToLump(vecBuilds->Element(localGroup[0]));
 		return;
 	}
+
+	avgPos /= localGroup.Count();
+	avgYaw /= localGroup.Count(); // TODO: Round to nearest 15 degrees
+
+	avgYaw = RoundInt(avgYaw / 15.f) * 15.f;
+
+	matrix3x4_t yawRot;
+	AngleMatrix(QAngle(0, -avgYaw, 0), yawRot);
 
 	Msg("Group:\n");
 
@@ -1392,6 +1412,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 	char pDecompCache[MAX_PATH];
 	V_snprintf(pDecompCache, MAX_PATH, "%sdecomp_cache\\", pGameDirectory);
+
+	CRC32_t propPosCRC;
+	CRC32_Init(&propPosCRC);
 
 	// TODO: actually combine the local group by writing a qc and building the model
 	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
@@ -1440,16 +1463,43 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 
 		s_source_t &additionMesh = dLoadedSMDs.Element(smdInd).refSMD;
 
-		Vector offsetOrigin = localBuild.m_Origin - vecBuilds->Element(localGroup[0]).m_Origin;
+		Vector additionOrigin;
+		VectorRotate(localBuild.m_Origin - avgPos, yawRot, additionOrigin);
 
-		CombineMeshes(combinedMesh, additionMesh, offsetOrigin, localBuild.m_Angles, correspondingQC->m_flRefScale);
+		QAngle additionAngle = localBuild.m_Angles;
+		additionAngle[YAW] -= avgYaw;
+
+		int additionOriginDivisions[3];
+		int additionAngleDivisions[3];
+
+		for (int i = 0; i < 3; ++i)
+		{
+			additionOriginDivisions[i] = RoundInt(additionOrigin.Base()[i] * PROPPOS_ROUND_NUM);
+			additionAngleDivisions[i] = RoundInt(additionAngle.Base()[i] * PROPPOS_ROUND_NUM);
+
+			additionOrigin.Base()[i] = additionOriginDivisions[i] / PROPPOS_ROUND_NUM;
+			additionAngle.Base()[i] = additionAngleDivisions[i] / PROPPOS_ROUND_NUM;
+
+			
+		}
+
+		CombineMeshes(combinedMesh, additionMesh, additionOrigin, additionAngle, correspondingQC->m_flRefScale);
 
 		if (dLoadedSMDs.Element(smdInd).phySMD.numvertices != 0)
 		{
 			s_source_t &additionCollisionMesh = dLoadedSMDs.Element(smdInd).phySMD;
 
-			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, offsetOrigin, localBuild.m_Angles, correspondingQC->m_flPhyScale);
+			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, additionOrigin, additionAngle, correspondingQC->m_flPhyScale);
 		}
+
+		float buildScale = 1;
+
+		CRC32_ProcessBuffer(&propPosCRC, additionOriginDivisions, sizeof(additionOriginDivisions));
+		CRC32_ProcessBuffer(&propPosCRC, additionAngleDivisions, sizeof(additionAngleDivisions));
+		CRC32_ProcessBuffer(&propPosCRC, localBuild.m_pModelName, sizeof(char) * V_strlen(localBuild.m_pModelName));
+		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Skin, sizeof(int));
+		CRC32_ProcessBuffer(&propPosCRC, &buildScale, sizeof(float));
+		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Solid, sizeof(int));
 
 		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
 		// This updates the s_source thing 
@@ -1462,7 +1512,9 @@ inline void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int>
 		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
-	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars, vecBuilds, pGameDirectory, &localGroup);
+	CRC32_Final(&propPosCRC);
+
+	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, avgYaw);
 }
 
 #endif // STATIC_PROP_COMBINE_ENABLED
