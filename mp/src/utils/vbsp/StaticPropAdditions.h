@@ -68,8 +68,8 @@ struct loaded_model_smds_t
 };
 
 void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir = "modelsrc");
-void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs);
-void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs);
+void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps, CRC32_t crc);
+void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps);
 
 #define MAX_GROUPING_KEY 256
 
@@ -98,8 +98,6 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 
 void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps);
-
-void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs);
 
 
 #endif // STATIC_PROP_COMBINE_ENABLED

@@ -600,18 +600,6 @@ int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache
 //                           LUMP ADDITION                             //
 //---------------------------------------------------------------------//
 
-void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
-{
-	if (fabs(build.m_Scale - 1.0f) > 0.0001f)
-	{
-		ScalePropAndAddToLump(build, buildVars, dQCs, dLoadedSMDs);
-
-		return;
-	}
-
-	AddStaticPropToLump(build);
-}
-
 StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles)
 {
 	char pTempFilePath[MAX_PATH];
@@ -680,7 +668,40 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 	return newBuild;
 }
 
-void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
+void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps)
+{
+	if (fabs(build.m_Scale - 1.0f) > 0.0001f)
+	{
+		CRC32_t crc;
+		CRC32_Init(&crc);
+
+		CRC32_ProcessBuffer(&crc, build.m_pModelName, sizeof(char) * V_strlen(build.m_pModelName));
+		CRC32_ProcessBuffer(&crc, &build.m_Skin, sizeof(int));
+		CRC32_ProcessBuffer(&crc, &build.m_Scale, sizeof(float));
+		CRC32_ProcessBuffer(&crc, &build.m_Solid, sizeof(int));
+
+		CRC32_Final(&crc);
+
+		int combinedPropsInd = mapCombinedProps->Find(crc);
+		if (mapCombinedProps->IsValidIndex(combinedPropsInd))
+		{
+			StaticPropBuild_t newBuild = mapCombinedProps->Element(combinedPropsInd);
+			newBuild.m_Origin = build.m_Origin;
+			newBuild.m_Angles = build.m_Angles;
+
+			AddStaticPropToLump(newBuild);
+			return;
+		}
+
+		ScalePropAndAddToLump(build, buildVars, dQCs, dLoadedSMDs, mapCombinedProps, crc);
+
+		return;
+	}
+
+	AddStaticPropToLump(build);
+}
+
+void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps, CRC32_t crc)
 {
 	char pCrowbarCMD[MAX_PATH];
 	{
@@ -752,8 +773,9 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 		CombineMeshes(scaledCollisionMesh, loadedCollisionMesh, Vector(0, 0, 0), QAngle(0, -90, 0), correspondingQC->m_flPhyScale * propBuild.m_Scale);
 	}
 
-	CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles);
+	StaticPropBuild_t outBuild = CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles);
 
+	mapCombinedProps->Insert(crc, outBuild);
 }
 
 //---------------------------------------------------------------------//
@@ -856,7 +878,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		CPhysCollide* pConvexHull = GetCollisionModel(propBuild.m_pModelName);
 		if (!pConvexHull)
 		{
-			AddStaticPropToLumpWithScaling(propBuild, vecBuildVars->Element(buildInd), dQCs, dLoadedSMDs);
+			AddStaticPropToLumpWithScaling(propBuild, vecBuildVars->Element(buildInd), dQCs, dLoadedSMDs, combinedProps);
 			vecBuildAccountedFor->Element(buildInd) = true;
 
 			continue;
@@ -894,7 +916,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 	if (localGroup.Count() == 1)
 	{
-		AddStaticPropToLumpWithScaling(vecBuilds->Element(localGroup[0]), vecBuildVars->Element(localGroup[0]), dQCs, dLoadedSMDs);
+		AddStaticPropToLumpWithScaling(vecBuilds->Element(localGroup[0]), vecBuildVars->Element(localGroup[0]), dQCs, dLoadedSMDs, combinedProps);
 		vecBuildAccountedFor->Element(localGroup[0]) = true;
 		return;
 	}

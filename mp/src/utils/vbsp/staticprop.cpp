@@ -863,7 +863,7 @@ void EmitStaticProps()
 		{
 			if (!vecBuildAccountedFor[i])
 			{
-				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
+				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
 			}
 		}
 
@@ -881,7 +881,7 @@ void EmitStaticProps()
 		for (i = 0; i < vecBuilds.Count(); ++i) 
 		{
 			GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
-			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
+			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
 		}
 	}
 
