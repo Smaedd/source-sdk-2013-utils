@@ -8,6 +8,13 @@
 *
 ****/
 
+#ifndef MOTIONMAPPER_H
+#define MOTIONMAPPER_H
+
+#ifdef _WIN32
+#pragma once
+#endif
+
 #include <stdio.h>
 #include "basetypes.h"
 #include "utlvector.h"
@@ -288,3 +295,5 @@ extern void BuildIndividualMeshes( s_source_t *psource );
 #ifdef VBSP_DLL
 int Load_SMD(s_source_t *psource);
 #endif
+
+#endif // MOTIONMAPPER_H
