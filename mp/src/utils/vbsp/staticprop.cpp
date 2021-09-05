@@ -15,6 +15,7 @@
 #include "Studio.h"
 #include "byteswap.h"
 #include "utlhashdict.h"
+#include "utlmap.h"
 #include "UtlBuffer.h"
 #include "CollisionUtils.h"
 #include <float.h>
@@ -120,6 +121,7 @@ isstaticprop_ret IsStaticProp( studiohdr_t* pHdr )
 	if (!(pHdr->flags & STUDIOHDR_FLAGS_STATIC_PROP))
 		return RET_FAIL_NOT_MARKED_STATIC_PROP;
 
+#if 0 // This seems to have no purpose
 	// If it's got a propdata section in the model's keyvalues, it's not allowed to be a prop_static
 	KeyValues *modelKeyValues = new KeyValues(pHdr->pszName());
 	if ( StudioKeyValues( pHdr, modelKeyValues ) )
@@ -135,6 +137,7 @@ isstaticprop_ret IsStaticProp( studiohdr_t* pHdr )
 		}
 	}
 	modelKeyValues->deleteThis();
+#endif
 
 	return RET_VALID;
 }
@@ -589,6 +592,11 @@ static void SetLumpData( )
 // Places Static Props in the level
 //-----------------------------------------------------------------------------
 
+static bool CRCLessFunc(const CRC32_t &a, const CRC32_t &b)
+{
+	return a < b;
+}
+
 const char *g_szMapFileName = NULL;
 
 #ifdef STATIC_PROP_COMBINE_ENABLED
@@ -745,6 +753,10 @@ void EmitStaticProps()
 	CUtlHashDict<loaded_model_smds_t> dLoadedSMDs;
 	dLoadedSMDs.Purge();
 
+	CUtlMap<CRC32_t, StaticPropBuild_t> mapCombinedProps;
+	mapCombinedProps.SetLessFunc(CRCLessFunc);
+	mapCombinedProps.Purge();
+
 	if (vecPropCombineVolumes.Count() > 0)
 	{
 		Msg("\nCombining static props to reduce drawcalls...\n\n");
@@ -777,8 +789,9 @@ void EmitStaticProps()
 
 			if (!groupingKey)
 			{
-				// Add prop as it was not grouped
-				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs);
+
+				// Add prop as it was not grouped: No scaling allowed
+				AddStaticPropToLump(vecBuilds.Element(i));
 				vecBuildAccountedFor[i] = true;
 
 				continue;
@@ -837,7 +850,7 @@ void EmitStaticProps()
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs, dLoadedSMDs);
+				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs, dLoadedSMDs, &mapCombinedProps);
 			}
 		}
 

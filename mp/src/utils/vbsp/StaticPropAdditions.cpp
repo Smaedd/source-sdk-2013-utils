@@ -3,6 +3,7 @@
 #include "vbsp.h"
 #include "gamebspfile.h"
 #include "utlhashdict.h"
+#include "utlmap.h"
 #include "UtlBuffer.h"
 #include "CollisionUtils.h"
 #include "tier2/fileutils.h"
@@ -610,7 +611,7 @@ void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildv
 	AddStaticPropToLump(build);
 }
 
-void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles)
+StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles)
 {
 	char pTempFilePath[MAX_PATH];
 	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
@@ -674,6 +675,8 @@ void CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollision
 	newBuild.m_Angles = angles;
 
 	AddStaticPropToLump(newBuild);
+
+	return newBuild;
 }
 
 void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
@@ -698,6 +701,9 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 		qcInd = DecompileModel(propBuild, pDecompCache, pCrowbarCMD, dQCs);
 
 		if (!dQCs.IsValidIndex(qcInd)) {
+			Warning("Unable to decompile %s. Not scaling...\n", propBuild.m_pModelName);
+			AddStaticPropToLump(propBuild);
+
 			return;
 		}
 	}
@@ -830,7 +836,7 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 #define PROPPOS_ROUND_NUM 1000.f
 
 void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
-	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs)
+	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps)
 {
 	CUtlVector<int> localGroup;
 
@@ -900,6 +906,54 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	matrix3x4_t yawRot;
 	AngleMatrix(QAngle(0, -avgYaw, 0), yawRot);
 
+	CRC32_t propPosCRC;
+	CRC32_Init(&propPosCRC);
+	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
+	{
+		int buildInd = localGroup[localGroupInd];
+		const StaticPropBuild_t &localBuild = vecBuilds->Element(buildInd);
+
+		Vector additionOrigin;
+		VectorRotate(localBuild.m_Origin - avgPos, yawRot, additionOrigin);
+
+		QAngle additionAngle = localBuild.m_Angles;
+		additionAngle[YAW] -= avgYaw;
+
+		int additionOriginDivisions[3];
+		int additionAngleDivisions[3];
+
+		for (int i = 0; i < 3; ++i)
+		{
+			additionOriginDivisions[i] = RoundInt(additionOrigin.Base()[i] * PROPPOS_ROUND_NUM);
+			additionAngleDivisions[i] = RoundInt(additionAngle.Base()[i] * PROPPOS_ROUND_NUM);
+
+			additionOrigin.Base()[i] = additionOriginDivisions[i] / PROPPOS_ROUND_NUM;
+			additionAngle.Base()[i] = additionAngleDivisions[i] / PROPPOS_ROUND_NUM;
+		}
+
+		float buildScale = 1;
+
+		CRC32_ProcessBuffer(&propPosCRC, additionOriginDivisions, sizeof(additionOriginDivisions));
+		CRC32_ProcessBuffer(&propPosCRC, additionAngleDivisions, sizeof(additionAngleDivisions));
+		CRC32_ProcessBuffer(&propPosCRC, localBuild.m_pModelName, sizeof(char) * V_strlen(localBuild.m_pModelName));
+		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Skin, sizeof(int));
+		CRC32_ProcessBuffer(&propPosCRC, &buildScale, sizeof(float));
+		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Solid, sizeof(int));
+	}
+	CRC32_Final(&propPosCRC);
+
+
+	int combinedPropsInd = combinedProps->Find(propPosCRC);
+	if (combinedProps->IsValidIndex(combinedPropsInd))
+	{
+		StaticPropBuild_t newBuild = combinedProps->Element(combinedPropsInd);
+		newBuild.m_Origin = avgPos;
+		newBuild.m_Angles = QAngle(0, avgYaw - 90, 0);
+
+		AddStaticPropToLump(newBuild);
+		return;
+	}
+
 	Msg("Group:\n");
 
 	s_source_t combinedMesh;
@@ -923,8 +977,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	char pDecompCache[MAX_PATH];
 	V_snprintf(pDecompCache, MAX_PATH, "%sdecomp_cache\\", pGameDirectory);
 
-	CRC32_t propPosCRC;
-	CRC32_Init(&propPosCRC);
+	
 
 	// TODO: actually combine the local group by writing a qc and building the model
 	for (int localGroupInd = 0; localGroupInd < localGroup.Count(); localGroupInd++)
@@ -982,15 +1035,13 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		int additionOriginDivisions[3];
 		int additionAngleDivisions[3];
 
-		for (int i = 0; i < 3; ++i)
+		for (int i = 0; i < 3; ++i) // TODO: CACHE THIS STUFF MAYBE?
 		{
 			additionOriginDivisions[i] = RoundInt(additionOrigin.Base()[i] * PROPPOS_ROUND_NUM);
 			additionAngleDivisions[i] = RoundInt(additionAngle.Base()[i] * PROPPOS_ROUND_NUM);
 
 			additionOrigin.Base()[i] = additionOriginDivisions[i] / PROPPOS_ROUND_NUM;
 			additionAngle.Base()[i] = additionAngleDivisions[i] / PROPPOS_ROUND_NUM;
-
-
 		}
 
 		CombineMeshes(combinedMesh, additionMesh, additionOrigin, additionAngle, correspondingQC->m_flRefScale * localBuild.m_Scale);
@@ -1001,15 +1052,6 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 			CombineMeshes(combinedCollisionMesh, additionCollisionMesh, additionOrigin, additionAngle, correspondingQC->m_flPhyScale * localBuild.m_Scale);
 		}
-
-		float buildScale = 1;
-
-		CRC32_ProcessBuffer(&propPosCRC, additionOriginDivisions, sizeof(additionOriginDivisions));
-		CRC32_ProcessBuffer(&propPosCRC, additionAngleDivisions, sizeof(additionAngleDivisions));
-		CRC32_ProcessBuffer(&propPosCRC, localBuild.m_pModelName, sizeof(char) * V_strlen(localBuild.m_pModelName));
-		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Skin, sizeof(int));
-		CRC32_ProcessBuffer(&propPosCRC, &buildScale, sizeof(float));
-		CRC32_ProcessBuffer(&propPosCRC, &localBuild.m_Solid, sizeof(int));
 
 		// In here, get the SMD of the model somehow using the QC. use motionmapper's Load_SMD by setting filename in the input
 		// This updates the s_source thing 
@@ -1022,9 +1064,9 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
-	CRC32_Final(&propPosCRC);
+	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0));
 
-	CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0));
+	combinedProps->Insert(propPosCRC, createdBuild);
 }
 
 #endif
