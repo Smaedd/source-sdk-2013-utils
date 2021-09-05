@@ -100,6 +100,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps);
 
 void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs);
+
+
 #endif // STATIC_PROP_COMBINE_ENABLED
 
 #endif // STATICPROPADDITIONS_H

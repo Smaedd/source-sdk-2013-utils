@@ -268,6 +268,7 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir /*= "mode
 
 void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char *cdmaterials, int contents, bool hasCollision)
 {
+	// TODO: Set bbox
 	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
 
 	buf.Printf("$staticprop\n");
@@ -833,7 +834,7 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 	return groupingKey;
 }
 
-#define PROPPOS_ROUND_NUM 1000.f
+#define PROPPOS_ROUND_NUM 100.f
 
 void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps)

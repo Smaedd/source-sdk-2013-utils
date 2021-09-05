@@ -740,6 +740,13 @@ void EmitStaticProps()
 
 #ifdef STATIC_PROP_COMBINE_ENABLED
 
+	// Setup motionmapper globals
+	g_currentscale = g_defaultscale = 1.0;
+	g_defaultrotation = RadianEuler(0, 0, M_PI / 2);
+
+	flip_triangles = 0;
+	normal_blend = 2.0f; // Never blend
+
 	// Load all QCs
 	CUtlHashDict<QCFile_t *> dQCs;
 	dQCs.Purge();
@@ -824,13 +831,6 @@ void EmitStaticProps()
 				Msg("\t%s : %f %f %f : %d\n", vecBuilds[propGroup->Element(propInd)].m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, propGroup->Element(propInd));
 			}
 		}
-
-		// Setup motionmapper globals
-		g_currentscale = g_defaultscale = 1.0;
-		g_defaultrotation = RadianEuler(0, 0, M_PI / 2);
-
-		flip_triangles = 0;
-		normal_blend = 2.0f; // Never blend
 
 
 		//, then split these groups by the propcombine volume
