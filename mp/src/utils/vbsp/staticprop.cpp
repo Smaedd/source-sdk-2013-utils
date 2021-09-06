@@ -760,9 +760,11 @@ void EmitStaticProps()
 	CUtlHashDict<loaded_model_smds_t> dLoadedSMDs;
 	dLoadedSMDs.Purge();
 
-	CUtlMap<CRC32_t, StaticPropBuild_t> mapCombinedProps;
+	CUtlMap<CRC32_t, const char *> mapCombinedProps;
 	mapCombinedProps.SetLessFunc(CRCLessFunc);
 	mapCombinedProps.Purge();
+
+	InitCache(&mapCombinedProps);
 
 	if (vecPropCombineVolumes.Count() > 0)
 	{
@@ -889,6 +891,8 @@ void EmitStaticProps()
 			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
 		}
 	}
+
+	CloseCache();
 
 #endif // STATIC_PROP_COMBINE_ENABLED
 

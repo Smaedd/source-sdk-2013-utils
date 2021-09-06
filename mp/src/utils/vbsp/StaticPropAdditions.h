@@ -68,8 +68,8 @@ struct loaded_model_smds_t
 };
 
 void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir = "modelsrc");
-void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps, CRC32_t crc);
-void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps);
+void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps, CRC32_t crc);
+void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps);
 
 #define MAX_GROUPING_KEY 256
 
@@ -97,7 +97,12 @@ extern const char *g_szMapFileName;
 StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles, CRC32_t crc);
 
 void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
-	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps);
+	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *combinedProps);
+
+void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps);
+void ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps);
+void WriteCacheLine(const char *modelName, CRC32_t processedCRC, const char *processedModelName);
+void CloseCache();
 
 
 #endif // STATIC_PROP_COMBINE_ENABLED

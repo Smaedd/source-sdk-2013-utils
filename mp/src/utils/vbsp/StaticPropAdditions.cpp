@@ -668,7 +668,7 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 	return newBuild;
 }
 
-void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps)
+void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps)
 {
 	if (fabs(build.m_Scale - 1.0f) > 0.0001f)
 	{
@@ -685,7 +685,8 @@ void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildv
 		int combinedPropsInd = mapCombinedProps->Find(crc);
 		if (mapCombinedProps->IsValidIndex(combinedPropsInd))
 		{
-			StaticPropBuild_t newBuild = mapCombinedProps->Element(combinedPropsInd);
+			StaticPropBuild_t newBuild = build;
+			newBuild.m_pModelName = mapCombinedProps->Element(combinedPropsInd);
 			newBuild.m_Origin = build.m_Origin;
 			newBuild.m_Angles = build.m_Angles;
 
@@ -701,7 +702,7 @@ void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildv
 	AddStaticPropToLump(build);
 }
 
-void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *mapCombinedProps, CRC32_t crc)
+void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps, CRC32_t crc)
 {
 	char pCrowbarCMD[MAX_PATH];
 	{
@@ -774,8 +775,9 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 	}
 
 	StaticPropBuild_t outBuild = CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles, crc);
+	WriteCacheLine(propBuild.m_pModelName, crc, outBuild.m_pModelName);
 
-	mapCombinedProps->Insert(crc, outBuild);
+	mapCombinedProps->Insert(crc, outBuild.m_pModelName);
 }
 
 //---------------------------------------------------------------------//
@@ -859,7 +861,7 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 #define PROPPOS_ROUND_NUM 100.f
 
 void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
-	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, StaticPropBuild_t> *combinedProps)
+	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *combinedProps)
 {
 	CUtlVector<int> localGroup;
 
@@ -969,7 +971,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	int combinedPropsInd = combinedProps->Find(propPosCRC);
 	if (combinedProps->IsValidIndex(combinedPropsInd))
 	{
-		StaticPropBuild_t newBuild = combinedProps->Element(combinedPropsInd);
+		StaticPropBuild_t newBuild = vecBuilds->Element(localGroup[0]); // Use first prop to get the build info
+		newBuild.m_pModelName = combinedProps->Element(combinedPropsInd);
 		newBuild.m_Origin = avgPos;
 		newBuild.m_Angles = QAngle(0, avgYaw - 90, 0);
 
@@ -1089,7 +1092,142 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
 
-	combinedProps->Insert(propPosCRC, createdBuild);
+	WriteCacheLine(vecBuilds->Element(localGroup[0]).m_pModelName, propPosCRC, createdBuild.m_pModelName);
+	combinedProps->Insert(propPosCRC, createdBuild.m_pModelName);
+}
+
+//---------------------------------------------------------------------//
+//                               CACHING                               //
+//---------------------------------------------------------------------//
+
+#define CACHE_LOCATION "modelsrc\\vbspaddon_mdls.cache"
+#define SEPARATOR_CHAR 0x1b
+#define MAX_CHECKSUM_LENGTH 48
+
+static const int MAX_CACHE_LINE = MAX_PATH * 2 + MAX_CHECKSUM_LENGTH * 2 + 4; // 2 Paths, 2 CRC32s, 3 seperator characters
+
+FileHandle_t cacheFileHandle;
+
+void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps) {
+
+	cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "ab+");
+	if (FILESYSTEM_INVALID_HANDLE == cacheFileHandle)
+	{
+		Warning("Unable to create cache at " CACHE_LOCATION "\n");
+		return;
+	}
+
+	char cacheLine[MAX_CACHE_LINE];
+
+	while (g_pFullFileSystem->ReadLine(cacheLine, MAX_CACHE_LINE, cacheFileHandle))
+	{
+		ParseCacheLine(cacheLine, mapCombinedProps);
+	}
+}
+
+bool GetModelChecksum(const char *modelPath, int &checksum)
+{
+	FileHandle_t fh = g_pFullFileSystem->Open(modelPath, "rb");
+	if (FILESYSTEM_INVALID_HANDLE == fh)
+	{
+		Warning("Unable to open model for checksum test\n");
+		return false;
+	}
+
+	int dataBuf[3];
+	g_pFullFileSystem->Read(dataBuf, sizeof(dataBuf), fh);
+
+	g_pFullFileSystem->Close(fh);
+
+	checksum = dataBuf[2];
+	return true;
+}
+
+void WriteCacheLine(const char *modelName, CRC32_t processedCRC, const char *processedModelName)
+{
+	char cacheLine[MAX_CACHE_LINE] = { 0 };
+
+	int modelChecksum;
+	if (!GetModelChecksum(modelName, modelChecksum))
+		return;
+
+	V_snprintf(cacheLine, MAX_CACHE_LINE, "%s%c0x%x%c0x%x%c%s\n", modelName, SEPARATOR_CHAR, modelChecksum, SEPARATOR_CHAR, processedCRC, SEPARATOR_CHAR, processedModelName);
+
+	g_pFullFileSystem->Write(cacheLine, V_strlen(cacheLine), cacheFileHandle);
+}
+
+void CloseCache()
+{
+	g_pFullFileSystem->Close(cacheFileHandle);
+}
+
+struct cacheentry_t
+{
+	char originalMDLPath[MAX_PATH];
+	uint32 originalMDLChecksum;
+	uint32 groupedCRC;
+	char combinedMDLPath[MAX_PATH];
+};
+
+inline int GetNextSeperatorPos(const char *cacheLine, int lastPos)
+{
+	for (int i = lastPos; i < MAX_CACHE_LINE; ++i)
+	{
+		if (cacheLine[i] == SEPARATOR_CHAR || cacheLine[i] == 0 || cacheLine[i] == '\n')
+		{
+			return i;
+		}
+	}
+
+	return MAX_CACHE_LINE;
+}
+
+void ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps)
+{
+	cacheentry_t cacheEntry;
+
+	int lastPos = 0;
+	int curPos = GetNextSeperatorPos(cacheLine, lastPos);
+	V_strncpy(cacheEntry.originalMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
+
+	int actualChecksum;
+	if (!GetModelChecksum(cacheEntry.originalMDLPath, actualChecksum))
+	{
+		// TODO: Remove line
+		return;
+	}
+
+	lastPos = curPos + 1;
+	curPos = GetNextSeperatorPos(cacheLine, lastPos);
+	{
+		char tmpString[MAX_CHECKSUM_LENGTH];
+		V_strncpy(tmpString, cacheLine + lastPos, curPos - lastPos + 1);
+		cacheEntry.originalMDLChecksum = V_atoi64(tmpString);
+	}
+
+	if (actualChecksum != cacheEntry.originalMDLChecksum)
+	{
+		// TODO: Remove line
+		return;
+	}
+
+	lastPos = curPos + 1;
+	curPos = GetNextSeperatorPos(cacheLine, lastPos);
+	{
+		char tmpString[MAX_CHECKSUM_LENGTH];
+		V_strncpy(tmpString, cacheLine + lastPos, curPos - lastPos + 1);
+		cacheEntry.groupedCRC = V_atoi64(tmpString);
+	}
+
+	lastPos = curPos + 1;
+	curPos = GetNextSeperatorPos(cacheLine, lastPos);
+	V_strncpy(cacheEntry.combinedMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
+
+	int mdlPathLen = V_strlen(cacheEntry.combinedMDLPath);
+	char *mdlPathPersistent = new char[mdlPathLen + 1];
+	V_strcpy(mdlPathPersistent, cacheEntry.combinedMDLPath);
+
+	mapCombinedProps->Insert(cacheEntry.groupedCRC, mdlPathPersistent);
 }
 
 #endif
