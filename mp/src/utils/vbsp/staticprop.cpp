@@ -814,6 +814,10 @@ void EmitStaticProps()
 
 				groupInd = dPropGroups.Insert(groupingKey, newGroup);
 			}
+			else
+			{
+				delete[] groupingKey;
+			}
 
 			dPropGroups[groupInd]->AddToTail(i);
 		}
@@ -880,7 +884,8 @@ void EmitStaticProps()
 	{
 		for (i = 0; i < vecBuilds.Count(); ++i) 
 		{
-			GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
+			const char *tmp = GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
+			delete[] tmp;
 			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
 		}
 	}

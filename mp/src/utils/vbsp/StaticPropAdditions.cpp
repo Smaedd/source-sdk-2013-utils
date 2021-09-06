@@ -600,7 +600,7 @@ int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache
 //                           LUMP ADDITION                             //
 //---------------------------------------------------------------------//
 
-StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles)
+StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles, CRC32_t crc)
 {
 	char pTempFilePath[MAX_PATH];
 	scriptlib->MakeTemporaryFilename(gamedir, pTempFilePath, MAX_PATH);
@@ -628,7 +628,7 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 	V_SetExtension(pQCFilePath, "qc", MAX_PATH);
 
 	char pModelName[MAX_PATH];
-	V_FileBase(pQCFilePath, pModelName, MAX_PATH);
+	V_snprintf(pModelName, MAX_PATH, "%x", crc);
 
 	char pMapBase[MAX_PATH];
 	V_FileBase(g_szMapFileName, pMapBase, MAX_PATH);
@@ -773,7 +773,7 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 		CombineMeshes(scaledCollisionMesh, loadedCollisionMesh, Vector(0, 0, 0), QAngle(0, -90, 0), correspondingQC->m_flPhyScale * propBuild.m_Scale);
 	}
 
-	StaticPropBuild_t outBuild = CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles);
+	StaticPropBuild_t outBuild = CompileAndAddToLump(scaledMesh, scaledCollisionMesh, buildVars, propBuild, pGameDirectory, propBuild.m_Origin, propBuild.m_Angles, crc);
 
 	mapCombinedProps->Insert(crc, outBuild);
 }
@@ -1087,7 +1087,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
-	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0));
+	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
 
 	combinedProps->Insert(propPosCRC, createdBuild);
 }
