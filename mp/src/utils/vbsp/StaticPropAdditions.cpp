@@ -891,8 +891,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		s_pPhysCollision->CollideGetAABB(&mins, &maxs, pConvexHull, propBuild.m_Origin, propBuild.m_Angles);
 
 		// Make sure to fix for scale
-		mins *= propBuild.m_Scale;
-		maxs *= propBuild.m_Scale;
+		mins = propBuild.m_Origin + (mins - propBuild.m_Origin) * propBuild.m_Scale;
+		maxs = propBuild.m_Origin + (maxs - propBuild.m_Origin) * propBuild.m_Scale;
 
 		bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
 
