@@ -890,6 +890,10 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		Vector mins, maxs;
 		s_pPhysCollision->CollideGetAABB(&mins, &maxs, pConvexHull, propBuild.m_Origin, propBuild.m_Angles);
 
+		// Make sure to fix for scale
+		mins *= propBuild.m_Scale;
+		maxs *= propBuild.m_Scale;
+
 		bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
 
 		for (bspbrush_t *pBrush = pBSPBrushList; pBrush; pBrush = pBrush->next)
@@ -979,8 +983,6 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		AddStaticPropToLump(newBuild);
 		return;
 	}
-
-	Msg("Group:\n");
 
 	s_source_t combinedMesh;
 	V_memset(&combinedMesh, 0, sizeof(combinedMesh));
@@ -1084,10 +1086,6 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		// Then combine these into 1 somehow
 		// Then, after all of this, compile into a mdl and add to map
 		vecBuildAccountedFor->Element(buildInd) = true;
-
-		const Vector &buildOrigin = localBuild.m_Origin;
-
-		Msg("\t%s : %f %f %f : %d\n", localBuild.m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, buildInd);
 	}
 
 	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
