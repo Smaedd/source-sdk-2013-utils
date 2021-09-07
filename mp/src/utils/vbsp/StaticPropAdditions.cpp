@@ -72,10 +72,19 @@ QCFile_t::QCFile_t(const char *pFileLocation, const char *pFilePath, bool *pRetV
 	{
 		if (!V_strcmp(token, "{")) // Skip over irrelevant "compound" sections
 		{
+			int braceCount = 1;
+
 			while (GetToken(true))
 			{
+				if (!V_strcmp(token, "{"))
+					braceCount++;
+
 				if (!V_strcmp(token, "}"))
-					break;
+				{
+					braceCount--;
+					if (braceCount == 0)
+						break;
+				}
 			}
 		}
 
@@ -211,6 +220,9 @@ invalidQC:
 	m_flRefScale = m_flPhyScale = 1.0f;
 
 	g_pFullFileSystem->FreeOptimalReadBuffer(buffer);
+
+	if (pRetVal)
+		*pRetVal = false;
 
 	return;
 }
@@ -744,15 +756,13 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 		V_memset(&loadingSMD.phySMD, 0, sizeof(s_source_t));
 
 		// Load the mesh into the addition meshes
-		V_strcpy(loadingSMD.refSMD.filename, "../");
-		V_strcpy(loadingSMD.refSMD.filename + 3, correspondingQC->m_pRefSMD);
+		V_snprintf(loadingSMD.refSMD.filename, MAX_PATH, "%s%s", pGameDirectory, correspondingQC->m_pRefSMD);
 
 		Load_SMD(&loadingSMD.refSMD);
 
 		if (correspondingQC->m_pPhySMD)
 		{
-			V_strcpy(loadingSMD.phySMD.filename, "../");
-			V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
+			V_snprintf(loadingSMD.phySMD.filename, MAX_PATH, "%s%s", pGameDirectory, correspondingQC->m_pPhySMD);
 
 			Load_SMD(&loadingSMD.phySMD);
 		}
@@ -792,6 +802,8 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 	{
 		Warning("Error loading studio model \"%s\"!\n", build.m_pModelName);
 
+		vecBuildVars->AddToTail(); // Add blank buildvars
+
 		return NULL;
 	}
 
@@ -819,7 +831,7 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 			V_strcpy(&groupingKey[curGroupingKeyInd], cdMat);
 			curGroupingKeyInd += V_strlen(cdMat);
 
-			mstudiotexture_t *tex = pStudioHdr->pTexture(cdMatInd);
+			mstudiotexture_t *tex = pStudioHdr->pTexture(texInd);
 			const char *texName = tex->pszName();
 
 			V_strcpy(&groupingKey[curGroupingKeyInd], texName);
@@ -1038,15 +1050,13 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 			V_memset(&loadingSMD.phySMD, 0, sizeof(s_source_t));
 
 			// Load the mesh into the addition meshes
-			V_strcpy(loadingSMD.refSMD.filename, "../");
-			V_strcpy(loadingSMD.refSMD.filename + 3, correspondingQC->m_pRefSMD);
+			V_snprintf(loadingSMD.refSMD.filename, MAX_PATH, "%s%s", pGameDirectory, correspondingQC->m_pRefSMD);
 
 			Load_SMD(&loadingSMD.refSMD);
 
 			if (correspondingQC->m_pPhySMD)
 			{
-				V_strcpy(loadingSMD.phySMD.filename, "../");
-				V_strcpy(loadingSMD.phySMD.filename + 3, correspondingQC->m_pPhySMD);
+				V_snprintf(loadingSMD.phySMD.filename, MAX_PATH, "%s%s", pGameDirectory, correspondingQC->m_pPhySMD);
 
 				Load_SMD(&loadingSMD.phySMD);
 			}
