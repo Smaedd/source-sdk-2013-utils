@@ -278,7 +278,7 @@ void SearchQCs(CUtlHashDict<QCFile_t *> &dQCs, const char *szSearchDir /*= "mode
 	}
 }
 
-void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char *cdmaterials, int contents, bool hasCollision)
+void SaveQCFile(const char *filename, const char *modelname, const char *refpath, const char *phypath, const char *animpath, const char *surfaceprop, const char (*cdmaterials)[MAX_PATH], int contents, bool hasCollision)
 {
 	// TODO: Set bbox
 	CUtlBuffer buf(0, 0, CUtlBuffer::TEXT_BUFFER);
@@ -304,7 +304,17 @@ void SaveQCFile(const char *filename, const char *modelname, const char *refpath
 	V_SetExtension(animpath_file, "smd", MAX_PATH);
 	buf.Printf("$sequence idle %s act_idle 1\n", animpath_file);
 
-	buf.Printf("$cdmaterials \"%s\"\n", cdmaterials);
+	buf.Printf("$cdmaterials ");
+
+	for (int i = 0; i < MAX_CDMATERIALS; ++i)
+	{
+		if (cdmaterials[i][0] == 0)
+			break;
+
+		buf.Printf("\"%s\" ", cdmaterials[i]);
+	}
+
+	buf.Printf("\n");
 
 	if (hasCollision)
 	{
@@ -794,7 +804,7 @@ void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t
 //                       GROUPING MAIN FUNCTIONS                       //
 //---------------------------------------------------------------------//
 
-const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVector<buildvars_t> *vecBuildVars)
+CRC32_t GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVector<buildvars_t> *vecBuildVars, bool *retVal)
 {
 	// Load the studio model file
 	CUtlBuffer buf;
@@ -804,15 +814,17 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 
 		vecBuildVars->AddToTail(); // Add blank buildvars
 
-		return NULL;
+		if (retVal)
+			*retVal = false;
+
+		return 0;
 	}
 
 	// Compute the convex hull of the model...
 	studiohdr_t* pStudioHdr = (studiohdr_t*)buf.PeekGet();
 
-	// Memory leak. In the spirit of valve, TOO BAD!
-	char *groupingKey = new char[MAX_GROUPING_KEY];
-	int curGroupingKeyInd = 0;
+	CRC32_t groupCRC;
+	CRC32_Init(&groupCRC);
 
 	// Create Build Vars
 	buildvars_t buildVars = { 0 };
@@ -821,53 +833,50 @@ const char *GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVec
 
 	for (int cdMatInd = 0; cdMatInd < pStudioHdr->numcdtextures; ++cdMatInd)
 	{
-		const char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
-		V_strcpy(buildVars.cdMats, cdMat);
+		char *cdMat = pStudioHdr->pCdtexture(cdMatInd);
+		V_FixSlashes(cdMat, '/');
+		V_strcpy(buildVars.cdMats[cdMatInd], cdMat);
 
-		// TODO: Sort this stuff
-		// Add textures to key
-		for (int texInd = 0; texInd < pStudioHdr->numtextures; ++texInd)
-		{
-			V_strcpy(&groupingKey[curGroupingKeyInd], cdMat);
-			curGroupingKeyInd += V_strlen(cdMat);
+		CRC32_ProcessBuffer(&groupCRC, cdMat, V_strlen(cdMat));
+	}
 
-			mstudiotexture_t *tex = pStudioHdr->pTexture(texInd);
-			const char *texName = tex->pszName();
+	for (int texInd = 0; texInd < pStudioHdr->numtextures; ++texInd)
+	{
+		mstudiotexture_t *tex = pStudioHdr->pTexture(texInd);
+		char *texName = tex->pszName();
+		V_FixSlashes(texName, '/');
 
-			V_strcpy(&groupingKey[curGroupingKeyInd], texName);
-			curGroupingKeyInd += V_strlen(texName);
-		}
+		CRC32_ProcessBuffer(&groupCRC, texName, V_strlen(texName));
 	}
 
 	vecBuildVars->AddToTail(buildVars);
 
-	V_FixSlashes(groupingKey, '/');
-
 	// Add model flags
-	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->flags);
-	curGroupingKeyInd += 8;
+	CRC32_ProcessBuffer(&groupCRC, &pStudioHdr->flags, sizeof(pStudioHdr->flags));
 
 	// Add prop flags
 	const int relevantPropFlags = ~(STATIC_PROP_USE_LIGHTING_ORIGIN | STATIC_PROP_FLAG_FADES);
 
-	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", build.m_Flags & relevantPropFlags);
-	curGroupingKeyInd += 8;
+	int maskedFlags = build.m_Flags & relevantPropFlags;
+	CRC32_ProcessBuffer(&groupCRC, &maskedFlags, sizeof(maskedFlags));
 
 	// Add contents
-	V_snprintf(&groupingKey[curGroupingKeyInd], 9, "%08X", pStudioHdr->contents);
-	curGroupingKeyInd += 8;
+	CRC32_ProcessBuffer(&groupCRC, &pStudioHdr->contents, sizeof(pStudioHdr->contents));
 
 	// Add surfaceprop
-	V_strcpy(&groupingKey[curGroupingKeyInd], pStudioHdr->pszSurfaceProp());
-	curGroupingKeyInd += V_strlen(pStudioHdr->pszSurfaceProp());
+	CRC32_ProcessBuffer(&groupCRC, &buildVars.surfaceProp, sizeof(buildVars.surfaceProp));
 
 	// TODO: Add renderFX
 
 	// TODO: Add tint
-
 	buf.Clear();
 
-	return groupingKey;
+	CRC32_Final(&groupCRC);
+
+	if (retVal)
+		*retVal = true;
+
+	return groupCRC;
 }
 
 #define PROPPOS_ROUND_NUM 100.f
@@ -1118,6 +1127,8 @@ FileHandle_t cacheFileHandle;
 
 void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps) {
 
+	Msg("Initializing vbsp addon cache...\n");
+
 	cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "rb");
 	if (FILESYSTEM_INVALID_HANDLE == cacheFileHandle)
 	{
@@ -1133,6 +1144,11 @@ void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps) {
 	char tempFile[MAX_PATH];
 	scriptlib->MakeTemporaryFilename(gamedir, tempFile, MAX_PATH);
 	FileHandle_t tempFileHandle = g_pFullFileSystem->Open(tempFile, "wb+");
+	if (FILESYSTEM_INVALID_HANDLE == tempFileHandle)
+	{
+		Warning("Unable to read temp file... not deleting incorrect lines.\n");
+		return;
+	}
 
 	char cacheLine[MAX_CACHE_LINE];
 

@@ -750,9 +750,12 @@ void EmitStaticProps()
 	// Load all QCs
 	CUtlHashDict<QCFile_t *> dQCs;
 	dQCs.Purge();
+
+	Msg("Searching for qcs in modelsrc/\n");
 	SearchQCs(dQCs);
 
 	// Search decompiled models
+	Msg("Searching for qcs in decomp_cache/\n");
 	SearchQCs(dQCs, "decomp_cache/");
 
 	CUtlVector<buildvars_t> vecBuildVars;
@@ -794,9 +797,13 @@ void EmitStaticProps()
 			if (vecBuildAccountedFor[i])
 				continue;
 
-			const char *groupingKey = GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
+			bool groupKeyRetVal = false;
+			CRC32_t groupingKey = GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars, &groupKeyRetVal);
 
-			if (!groupingKey)
+			char szGroupKey[10] = { 0 };
+			V_snprintf(szGroupKey, 9, "%x", groupingKey);
+
+			if (!groupKeyRetVal)
 			{
 
 				// Add prop as it was not grouped: No scaling allowed
@@ -806,7 +813,7 @@ void EmitStaticProps()
 				continue;
 			}
 
-			int groupInd = dPropGroups.Find(groupingKey);
+			int groupInd = dPropGroups.Find(szGroupKey);
 
 			// Add to groups
 			if (!dPropGroups.IsValidIndex(groupInd))
@@ -814,11 +821,7 @@ void EmitStaticProps()
 				// FIXME: DELETE THESE
 				CUtlVector<int> *newGroup = new CUtlVector<int>();
 
-				groupInd = dPropGroups.Insert(groupingKey, newGroup);
-			}
-			else
-			{
-				delete[] groupingKey;
+				groupInd = dPropGroups.Insert(szGroupKey, newGroup);
 			}
 
 			dPropGroups[groupInd]->AddToTail(i);
@@ -886,8 +889,7 @@ void EmitStaticProps()
 	{
 		for (i = 0; i < vecBuilds.Count(); ++i) 
 		{
-			const char *tmp = GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
-			delete[] tmp;
+			GetGroupingKeyAndSetNeededBuildVars(vecBuilds[i], &vecBuildVars);
 			AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
 		}
 	}
