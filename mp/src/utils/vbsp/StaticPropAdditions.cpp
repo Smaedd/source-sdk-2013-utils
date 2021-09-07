@@ -1088,7 +1088,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		vecBuildAccountedFor->Element(buildInd) = true;
 	}
 
-	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
+	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(localGroup[0]), vecBuilds->Element(localGroup[0]), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
 
 	WriteCacheLine(vecBuilds, &localGroup, propPosCRC, createdBuild.m_pModelName);
 	combinedProps->Insert(propPosCRC, createdBuild.m_pModelName);
@@ -1294,10 +1294,13 @@ int ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCom
 	curPos = GetNextSeperatorPos(cacheLine, lastPos);
 	V_strncpy(combinedMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
 
+	if (!g_pFullFileSystem->FileExists(combinedMDLPath))
+		return 0;
+
 	int mdlPathLen = V_strlen(combinedMDLPath);
 	char *mdlPathPersistent = new char[mdlPathLen + 1];
 	V_strcpy(mdlPathPersistent, combinedMDLPath);
-
+	
 	mapCombinedProps->Insert(groupedCRC, mdlPathPersistent);
 
 	return curPos + 1;
