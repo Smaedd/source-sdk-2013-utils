@@ -1092,7 +1092,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 	StaticPropBuild_t createdBuild = CompileAndAddToLump(combinedMesh, combinedCollisionMesh, vecBuildVars->Element(0), vecBuilds->Element(0), pGameDirectory, avgPos, QAngle(0, avgYaw - 90, 0), propPosCRC);
 
-	WriteCacheLine(vecBuilds->Element(localGroup[0]).m_pModelName, propPosCRC, createdBuild.m_pModelName);
+	WriteCacheLine(vecBuilds, &localGroup, propPosCRC, createdBuild.m_pModelName);
 	combinedProps->Insert(propPosCRC, createdBuild.m_pModelName);
 }
 
@@ -1102,27 +1102,65 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 #define CACHE_LOCATION "modelsrc\\vbspaddon_mdls.cache"
 #define SEPARATOR_CHAR 0x1b
-#define MAX_CHECKSUM_LENGTH 48
+#define MAX_CHECKSUM_LENGTH 11
 
-static const int MAX_CACHE_LINE = MAX_PATH * 2 + MAX_CHECKSUM_LENGTH * 2 + 4; // 2 Paths, 2 CRC32s, 3 seperator characters
+static const int MAX_CACHE_LINE = MAX_PATH * 6 + MAX_CHECKSUM_LENGTH * 6 + 12; // 6 Paths, 6 CRC32s, 11 seperator characters
 
 FileHandle_t cacheFileHandle;
 
 void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps) {
 
-	cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "ab+");
+	cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "rb");
+	if (FILESYSTEM_INVALID_HANDLE == cacheFileHandle)
+	{
+		cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "ab");
+		if (FILESYSTEM_INVALID_HANDLE == cacheFileHandle)
+		{
+			Warning("Unable to create cache at " CACHE_LOCATION "\n");
+		}
+
+		return;
+	}
+
+	char tempFile[MAX_PATH];
+	scriptlib->MakeTemporaryFilename(gamedir, tempFile, MAX_PATH);
+	FileHandle_t tempFileHandle = g_pFullFileSystem->Open(tempFile, "wb+");
+
+	char cacheLine[MAX_CACHE_LINE];
+
+	while (g_pFullFileSystem->ReadLine(cacheLine, MAX_CACHE_LINE, cacheFileHandle))
+	{
+		int lineLength = 0;
+		if (lineLength = ParseCacheLine(cacheLine, mapCombinedProps))
+		{
+			g_pFullFileSystem->Write(cacheLine, lineLength, tempFileHandle);
+		}
+	}
+
+	g_pFullFileSystem->Close(tempFileHandle);
+	tempFileHandle = g_pFullFileSystem->Open(tempFile, "rb");
+	if (FILESYSTEM_INVALID_HANDLE == tempFileHandle)
+	{
+		Warning("Unable to read temp file... not deleting incorrect lines.\n");
+		return;
+	}
+
+	g_pFullFileSystem->Close(cacheFileHandle);
+	cacheFileHandle = g_pFullFileSystem->Open(CACHE_LOCATION, "wb");
 	if (FILESYSTEM_INVALID_HANDLE == cacheFileHandle)
 	{
 		Warning("Unable to create cache at " CACHE_LOCATION "\n");
 		return;
 	}
 
-	char cacheLine[MAX_CACHE_LINE];
-
-	while (g_pFullFileSystem->ReadLine(cacheLine, MAX_CACHE_LINE, cacheFileHandle))
+	g_pFullFileSystem->Seek(tempFileHandle, 0, FILESYSTEM_SEEK_HEAD);
+	while (g_pFullFileSystem->ReadLine(cacheLine, MAX_CACHE_LINE, tempFileHandle))
 	{
-		ParseCacheLine(cacheLine, mapCombinedProps);
+		int lineLength = V_strlen(cacheLine);
+		g_pFullFileSystem->Write(cacheLine, lineLength, cacheFileHandle);
 	}
+
+	g_pFullFileSystem->Close(tempFileHandle);
 }
 
 bool GetModelChecksum(const char *modelPath, int &checksum)
@@ -1145,29 +1183,59 @@ bool GetModelChecksum(const char *modelPath, int &checksum)
 
 void WriteCacheLine(const char *modelName, CRC32_t processedCRC, const char *processedModelName)
 {
+	unsigned int fileLoc = g_pFullFileSystem->Tell(cacheFileHandle);
+	g_pFullFileSystem->Seek(cacheFileHandle, 0, FILESYSTEM_SEEK_TAIL);
+
 	char cacheLine[MAX_CACHE_LINE] = { 0 };
 
 	int modelChecksum;
 	if (!GetModelChecksum(modelName, modelChecksum))
 		return;
 
-	V_snprintf(cacheLine, MAX_CACHE_LINE, "%s%c0x%x%c0x%x%c%s\n", modelName, SEPARATOR_CHAR, modelChecksum, SEPARATOR_CHAR, processedCRC, SEPARATOR_CHAR, processedModelName);
+	V_snprintf(cacheLine, MAX_CACHE_LINE, "%s%c0x%x%c%c0x%x%c%s\n", modelName, SEPARATOR_CHAR, modelChecksum, SEPARATOR_CHAR, SEPARATOR_CHAR, processedCRC, SEPARATOR_CHAR, processedModelName);
 
 	g_pFullFileSystem->Write(cacheLine, V_strlen(cacheLine), cacheFileHandle);
+	g_pFullFileSystem->Seek(cacheFileHandle, fileLoc, FILESYSTEM_SEEK_HEAD);
+}
+
+void WriteCacheLine(const CUtlVector<StaticPropBuild_t> *vecBuilds, const CUtlVector<int> *localGroup, CRC32_t processedCRC, const char *processedModelName)
+{
+	unsigned int fileLoc = g_pFullFileSystem->Tell(cacheFileHandle);
+	g_pFullFileSystem->Seek(cacheFileHandle, 0, FILESYSTEM_SEEK_TAIL);
+
+	char cacheLine[MAX_CACHE_LINE] = { 0 };
+	int position = 0;
+
+	CUtlHashDict<int8> localGroupModelsSet; // Not sure of a better way to do hash set with utl so this will have to do
+	localGroupModelsSet.Purge();
+
+	for (int i = 0; i < localGroup->Count(); ++i)
+	{
+		const char *modelName = vecBuilds->Element(localGroup->Element(i)).m_pModelName;
+
+		int hashIndex = localGroupModelsSet.Find(modelName);
+		if (localGroupModelsSet.IsValidIndex(hashIndex))
+			continue;
+
+		localGroupModelsSet.Insert(modelName);
+
+		int modelChecksum;
+		if (!GetModelChecksum(modelName, modelChecksum))
+			return;
+
+		position += V_snprintf(cacheLine + position, MAX_CACHE_LINE, "%s%c0x%x%c", modelName, SEPARATOR_CHAR, modelChecksum, SEPARATOR_CHAR);
+	}
+	
+	V_snprintf(cacheLine + position, MAX_CACHE_LINE, "%c0x%x%c%s\n", SEPARATOR_CHAR, processedCRC, SEPARATOR_CHAR, processedModelName);
+
+	g_pFullFileSystem->Write(cacheLine, V_strlen(cacheLine), cacheFileHandle);
+	g_pFullFileSystem->Seek(cacheFileHandle, fileLoc, FILESYSTEM_SEEK_HEAD);
 }
 
 void CloseCache()
 {
 	g_pFullFileSystem->Close(cacheFileHandle);
 }
-
-struct cacheentry_t
-{
-	char originalMDLPath[MAX_PATH];
-	uint32 originalMDLChecksum;
-	uint32 groupedCRC;
-	char combinedMDLPath[MAX_PATH];
-};
 
 inline int GetNextSeperatorPos(const char *cacheLine, int lastPos)
 {
@@ -1182,52 +1250,59 @@ inline int GetNextSeperatorPos(const char *cacheLine, int lastPos)
 	return MAX_CACHE_LINE;
 }
 
-void ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps)
+int ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps)
 {
-	cacheentry_t cacheEntry;
+	char originalMDLPath[MAX_PATH];
+	int originalMDLChecksum;
+	uint32 groupedCRC;
+	char combinedMDLPath[MAX_PATH];
 
 	int lastPos = 0;
-	int curPos = GetNextSeperatorPos(cacheLine, lastPos);
-	V_strncpy(cacheEntry.originalMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
+	int curPos;
 
-	int actualChecksum;
-	if (!GetModelChecksum(cacheEntry.originalMDLPath, actualChecksum))
-	{
-		// TODO: Remove line
-		return;
+	// Original models end when double separator character found
+	while (cacheLine[lastPos] != SEPARATOR_CHAR) {
+		curPos = GetNextSeperatorPos(cacheLine, lastPos);
+		V_strncpy(originalMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
+
+		int actualChecksum;
+		if (!GetModelChecksum(originalMDLPath, actualChecksum))
+			return 0;
+
+		lastPos = curPos + 1;
+		curPos = GetNextSeperatorPos(cacheLine, lastPos);
+		{
+			char tmpString[MAX_CHECKSUM_LENGTH];
+			V_strncpy(tmpString, cacheLine + lastPos, curPos - lastPos + 1);
+			originalMDLChecksum = V_atoi64(tmpString);
+		}
+
+		if (actualChecksum != originalMDLChecksum)
+			return 0;
+
+		lastPos = curPos + 1;
 	}
 
-	lastPos = curPos + 1;
+	lastPos++; // Get past double escape char
+
 	curPos = GetNextSeperatorPos(cacheLine, lastPos);
 	{
 		char tmpString[MAX_CHECKSUM_LENGTH];
 		V_strncpy(tmpString, cacheLine + lastPos, curPos - lastPos + 1);
-		cacheEntry.originalMDLChecksum = V_atoi64(tmpString);
-	}
-
-	if (actualChecksum != cacheEntry.originalMDLChecksum)
-	{
-		// TODO: Remove line
-		return;
+		groupedCRC = V_atoi64(tmpString);
 	}
 
 	lastPos = curPos + 1;
 	curPos = GetNextSeperatorPos(cacheLine, lastPos);
-	{
-		char tmpString[MAX_CHECKSUM_LENGTH];
-		V_strncpy(tmpString, cacheLine + lastPos, curPos - lastPos + 1);
-		cacheEntry.groupedCRC = V_atoi64(tmpString);
-	}
+	V_strncpy(combinedMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
 
-	lastPos = curPos + 1;
-	curPos = GetNextSeperatorPos(cacheLine, lastPos);
-	V_strncpy(cacheEntry.combinedMDLPath, cacheLine + lastPos, curPos - lastPos + 1);
-
-	int mdlPathLen = V_strlen(cacheEntry.combinedMDLPath);
+	int mdlPathLen = V_strlen(combinedMDLPath);
 	char *mdlPathPersistent = new char[mdlPathLen + 1];
-	V_strcpy(mdlPathPersistent, cacheEntry.combinedMDLPath);
+	V_strcpy(mdlPathPersistent, combinedMDLPath);
 
-	mapCombinedProps->Insert(cacheEntry.groupedCRC, mdlPathPersistent);
+	mapCombinedProps->Insert(groupedCRC, mdlPathPersistent);
+
+	return curPos + 1;
 }
 
 #endif

@@ -100,8 +100,9 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *combinedProps);
 
 void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps);
-void ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps);
+int ParseCacheLine(const char *cacheLine, CUtlMap<CRC32_t, const char *> *mapCombinedProps);
 void WriteCacheLine(const char *modelName, CRC32_t processedCRC, const char *processedModelName);
+void WriteCacheLine(const CUtlVector<StaticPropBuild_t> *vecBuilds, const CUtlVector<int> *localGroup, CRC32_t processedCRC, const char *processedModelName);
 void CloseCache();
 
 
