@@ -596,7 +596,7 @@ int DecompileModel(const StaticPropBuild_t &localBuild, const char *pDecompCache
 	if (_spawnv(_P_WAIT, pCrowbarCMD, crowbarArgv) != 0) // error
 	{
 		// Console Spam :))
-		Warning("Unable to decompile %s.\n", localBuild.m_pModelName);
+		// Warning("Unable to decompile %s.\n", localBuild.m_pModelName);
 		return dQCs.InvalidHandle();
 	}
 
@@ -675,7 +675,10 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 		NULL
 	};
 
-	_spawnv(_P_WAIT, pStudioMDLCmd, argv);
+	if (_spawnv(_P_WAIT, pStudioMDLCmd, argv) != 0) // error
+	{
+		Error("Unable to combine prop! This will produce a warning only in future but I haven't gotten around to it yet\n");
+	}
 
 	char pModelBuildName[MAX_PATH];
 	V_snprintf(pModelBuildName, sizeof(pModelBuildName), "models\\%s", pFullModelPath);
@@ -692,36 +695,36 @@ StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &comb
 
 void AddStaticPropToLumpWithScaling(const StaticPropBuild_t &build, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps)
 {
-	if (fabs(build.m_Scale - 1.0f) > 0.0001f)
+	if (fabs(build.m_Scale - 1.0f) < 0.0001f)
 	{
-		CRC32_t crc;
-		CRC32_Init(&crc);
-
-		CRC32_ProcessBuffer(&crc, build.m_pModelName, sizeof(char) * V_strlen(build.m_pModelName));
-		CRC32_ProcessBuffer(&crc, &build.m_Skin, sizeof(int));
-		CRC32_ProcessBuffer(&crc, &build.m_Scale, sizeof(float));
-		CRC32_ProcessBuffer(&crc, &build.m_Solid, sizeof(int));
-
-		CRC32_Final(&crc);
-
-		int combinedPropsInd = mapCombinedProps->Find(crc);
-		if (mapCombinedProps->IsValidIndex(combinedPropsInd))
-		{
-			StaticPropBuild_t newBuild = build;
-			newBuild.m_pModelName = mapCombinedProps->Element(combinedPropsInd);
-			newBuild.m_Origin = build.m_Origin;
-			newBuild.m_Angles = build.m_Angles;
-
-			AddStaticPropToLump(newBuild);
-			return;
-		}
-
-		ScalePropAndAddToLump(build, buildVars, dQCs, dLoadedSMDs, mapCombinedProps, crc);
+		AddStaticPropToLump(build);
 
 		return;
 	}
 
-	AddStaticPropToLump(build);
+	CRC32_t crc;
+	CRC32_Init(&crc);
+
+	CRC32_ProcessBuffer(&crc, build.m_pModelName, sizeof(char) * V_strlen(build.m_pModelName));
+	CRC32_ProcessBuffer(&crc, &build.m_Skin, sizeof(int));
+	CRC32_ProcessBuffer(&crc, &build.m_Scale, sizeof(float));
+	CRC32_ProcessBuffer(&crc, &build.m_Solid, sizeof(int));
+
+	CRC32_Final(&crc);
+
+	int combinedPropsInd = mapCombinedProps->Find(crc);
+	if (mapCombinedProps->IsValidIndex(combinedPropsInd))
+	{
+		StaticPropBuild_t newBuild = build;
+		newBuild.m_pModelName = mapCombinedProps->Element(combinedPropsInd);
+		newBuild.m_Origin = build.m_Origin;
+		newBuild.m_Angles = build.m_Angles;
+
+		AddStaticPropToLump(newBuild);
+		return;
+	}
+
+	ScalePropAndAddToLump(build, buildVars, dQCs, dLoadedSMDs, mapCombinedProps, crc);
 }
 
 void ScalePropAndAddToLump(const StaticPropBuild_t &propBuild, const buildvars_t &buildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *mapCombinedProps, CRC32_t crc)
@@ -881,13 +884,15 @@ CRC32_t GetGroupingKeyAndSetNeededBuildVars(StaticPropBuild_t build, CUtlVector<
 
 #define PROPPOS_ROUND_NUM 100.f
 
-void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
+int GroupPropsForVolume(combinevolume_t &combineVolume, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *combinedProps)
 {
 	CUtlVector<int> localGroup;
 
 	Vector avgPos = Vector(0, 0, 0);
 	float avgYaw = 0.f;
+
+	int numPropsMade = 0;
 
 	for (int propInd = 0; propInd < keyGroupedProps->Count(); ++propInd)
 	{
@@ -904,6 +909,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 			AddStaticPropToLumpWithScaling(propBuild, vecBuildVars->Element(buildInd), dQCs, dLoadedSMDs, combinedProps);
 			vecBuildAccountedFor->Element(buildInd) = true;
 
+			numPropsMade++;
+
 			continue;
 		}
 
@@ -917,7 +924,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 		bspbrush_t *testBrush = BrushFromBounds(mins, maxs);
 
-		for (bspbrush_t *pBrush = pBSPBrushList; pBrush; pBrush = pBrush->next)
+		for (bspbrush_t *pBrush = combineVolume.pBSPBrushList; pBrush; pBrush = pBrush->next)
 		{
 			if (IsBoxIntersectingBox(testBrush->mins, testBrush->maxs, pBrush->mins, pBrush->maxs))
 			{
@@ -939,13 +946,13 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 	}
 
 	if (localGroup.Count() < 1)
-		return;
+		return numPropsMade;
 
 	if (localGroup.Count() == 1)
 	{
 		AddStaticPropToLumpWithScaling(vecBuilds->Element(localGroup[0]), vecBuildVars->Element(localGroup[0]), dQCs, dLoadedSMDs, combinedProps);
 		vecBuildAccountedFor->Element(localGroup[0]) = true;
-		return;
+		return numPropsMade++;
 	}
 
 	avgPos /= localGroup.Count();
@@ -1002,7 +1009,7 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 		newBuild.m_Angles = QAngle(0, avgYaw - 90, 0);
 
 		AddStaticPropToLump(newBuild);
-		return;
+		return numPropsMade++;
 	}
 
 	s_source_t combinedMesh;
@@ -1040,6 +1047,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 			qcInd = DecompileModel(localBuild, pDecompCache, pCrowbarCMD, dQCs);
 
 			if (!dQCs.IsValidIndex(qcInd)) {
+				Warning("Unable to decompile %s. This prop will not be in the map!\n", localBuild.m_pModelName);
+
 				continue;
 			}
 		}
@@ -1111,6 +1120,8 @@ void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGr
 
 	WriteCacheLine(vecBuilds, &localGroup, propPosCRC, createdBuild.m_pModelName);
 	combinedProps->Insert(propPosCRC, createdBuild.m_pModelName);
+
+	return numPropsMade++;
 }
 
 //---------------------------------------------------------------------//

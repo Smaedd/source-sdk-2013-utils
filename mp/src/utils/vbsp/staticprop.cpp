@@ -773,21 +773,13 @@ void EmitStaticProps()
 	{
 		Msg("\nCombining static props to reduce drawcalls...\n\n");
 
-		//int nOriginalCount = vecBuilds.Count();
-		//int nCombineIndex = 0;
-
-		
-
-		// Combining algorithm:
-
-		// Find prop materials by decompiling or finding qc
-
-
-		// RIGHT NOW: ASSUME WE HAVE THE MODEL SRC - QC FOUND
-
 		// Pair key to group, by index in vecBuilds
 		CUtlHashDict<CUtlVector<int> *> dPropGroups;
 		dPropGroups.Purge();
+
+		// Stored for info messages later
+		int numOriginalProps = vecBuilds.Count();
+		int numPostProps = 0;
 		
 		// Create grouping key for each
 		// TODO: Allow disabling some of the more unnecessary things (surfaceprop etc)
@@ -810,6 +802,8 @@ void EmitStaticProps()
 				AddStaticPropToLump(vecBuilds.Element(i));
 				vecBuildAccountedFor[i] = true;
 
+				numPostProps++;
+
 				continue;
 			}
 
@@ -827,22 +821,7 @@ void EmitStaticProps()
 			dPropGroups[groupInd]->AddToTail(i);
 		}
 
-		Msg("GROUPS PRE-VOLUME:\n");
-		for (i = 0; i < dPropGroups.Count(); ++i) 
-		{
-			Msg("Group %d:\n", i);
-
-			CUtlVector<int> *propGroup = dPropGroups[i];
-			for (int propInd = 0; propInd < propGroup->Count(); ++propInd)
-			{
-				Vector &buildOrigin = vecBuilds[propGroup->Element(propInd)].m_Origin;
-
-				Msg("\t%s : %f %f %f : %d\n", vecBuilds[propGroup->Element(propInd)].m_pModelName, buildOrigin.x, buildOrigin.y, buildOrigin.z, propGroup->Element(propInd));
-			}
-		}
-
-
-		//, then split these groups by the propcombine volume
+		// then split these groups by the propcombine volume
 		for (i = 0; i < vecPropCombineVolumes.Count(); ++i) 
 		{
 			entity_t propVolumeEnt = entities[vecPropCombineVolumes[i]];
@@ -855,11 +834,18 @@ void EmitStaticProps()
 				clipMins, clipMaxs, NO_DETAIL);
 			ChopBrushes(pBSPBrushList);
 
+			combinevolume_t combineVolume;
+			combineVolume.pBSPBrushList = pBSPBrushList;
+			combineVolume.skin = IntForKey(&propVolumeEnt, "skin");
+			combineVolume.szReferenceModel = ValueForKey(&propVolumeEnt, "prop");
+
 			for (int group = 0; group < dPropGroups.Count(); group++)
 			{
 				CUtlVector<int> *groupVec = dPropGroups.Element(group);
 
-				GroupPropsForVolume(pBSPBrushList, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs, dLoadedSMDs, &mapCombinedProps);
+				int volumeGroupedProps = GroupPropsForVolume(combineVolume, groupVec, &vecBuilds, &vecBuildAccountedFor, &vecBuildVars, dQCs, dLoadedSMDs, &mapCombinedProps);
+
+				numPostProps += volumeGroupedProps;
 			}
 		}
 
@@ -873,8 +859,12 @@ void EmitStaticProps()
 			if (!vecBuildAccountedFor[i])
 			{
 				AddStaticPropToLumpWithScaling(vecBuilds.Element(i), vecBuildVars.Element(i), dQCs, dLoadedSMDs, &mapCombinedProps);
+
+				numPostProps++;
 			}
 		}
+
+		Msg("Combined %d props into %d props\n", numOriginalProps, numPostProps);
 
 		// Then combine these props, create new builds and add to lump
 

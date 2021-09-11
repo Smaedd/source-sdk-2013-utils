@@ -96,7 +96,16 @@ extern const char *g_szMapFileName;
 
 StaticPropBuild_t CompileAndAddToLump(s_source_t &combinedMesh, s_source_t &combinedCollisionMesh, const buildvars_t &buildVars, const StaticPropBuild_t &build, const char *pGameDirectory, const Vector &avgPos, const QAngle &angles, CRC32_t crc);
 
-void GroupPropsForVolume(bspbrush_t *pBSPBrushList, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
+struct combinevolume_t
+{
+	bspbrush_t *pBSPBrushList;
+
+	const char *szReferenceModel;
+	int skin;
+};
+
+// Will always group to either one or zero props only. Returns true if prop was added to lump.
+int GroupPropsForVolume(combinevolume_t &combineVolume, const CUtlVector<int> *keyGroupedProps, const CUtlVector<StaticPropBuild_t> *vecBuilds, CUtlVector<bool> *vecBuildAccountedFor,
 	CUtlVector<buildvars_t> *vecBuildVars, CUtlHashDict<QCFile_t *> &dQCs, CUtlHashDict<loaded_model_smds_t> &dLoadedSMDs, CUtlMap<CRC32_t, const char *> *combinedProps);
 
 void InitCache(CUtlMap<CRC32_t, const char *> *mapCombinedProps);
